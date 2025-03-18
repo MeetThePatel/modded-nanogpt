@@ -309,19 +309,20 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, attn_alpha_init_value: float = 0.8, mlp_alpha_init_value: float = 0.2):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.norm = DynamicTanh(dim, alpha_init_value=0.5)
+        self.attn_norm = DynamicTanh(dim, attn_alpha_init_value)
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
+        self.mlp_norm = DynamicTanh(dim, mlp_alpha_init_value)
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if self.attn is not None:
-            x = x + self.attn(self.norm(x), ve, block_mask)
-        x = x + self.mlp(self.norm(x))
+            x = x + self.attn(self.attn_norm(x), ve, block_mask)
+        x = x + self.mlp(self.mlp_norm(x))
         return x
 
 # -----------------------------------------------------------------------------
