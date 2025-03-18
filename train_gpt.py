@@ -209,7 +209,7 @@ def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
 
 class DynamicTanh(nn.Module):
-    def __init__(self, normalized_shape: torch.Size, alpha_init_value:float = 0.5):
+    def __init__(self, normalized_shape: torch.Size, alpha_init_value: float):
         super().__init__()
         self.normalized_shape = normalized_shape
 
@@ -309,7 +309,7 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, attn_alpha_init_value: float = 0.8, mlp_alpha_init_value: float = 0.2):
+    def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int, attn_alpha_init_value: float = 0.7, mlp_alpha_init_value: float = 0.2):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn_norm = DynamicTanh(dim, attn_alpha_init_value)
