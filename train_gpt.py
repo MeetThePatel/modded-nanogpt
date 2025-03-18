@@ -208,6 +208,18 @@ class Muon(torch.optim.Optimizer):
 def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
 
+class DynamicTanh(nn.Module):
+    def __init__(self, normalized_shape: torch.Size, alpha_init_value:float = 0.5):
+        super().__init__()
+        self.normalized_shape = normalized_shape
+
+        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+
+    def forward(self, x: Tensor) -> Tensor:
+        return torch.tanh(self.alpha * x) * self.weight + self.bias
+
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int, use_fp8=False, x_s=1.0, w_s=1.0, grad_s=1.0):
         super().__init__(in_features, out_features, bias=False)
@@ -300,6 +312,7 @@ class Block(nn.Module):
     def __init__(self, dim: int, num_heads: int, max_seq_len: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
+        self.norm = DynamicTanh(dim, alpha_init_value=0.5)
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
@@ -307,8 +320,8 @@ class Block(nn.Module):
     def forward(self, x: Tensor, ve: Tensor | None, x0: Tensor, block_mask: BlockMask):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
         if self.attn is not None:
-            x = x + self.attn(norm(x), ve, block_mask)
-        x = x + self.mlp(norm(x))
+            x = x + self.attn(self.norm(x), ve, block_mask)
+        x = x + self.mlp(self.norm(x))
         return x
 
 # -----------------------------------------------------------------------------
