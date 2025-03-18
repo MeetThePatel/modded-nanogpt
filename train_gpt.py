@@ -213,9 +213,9 @@ class DynamicTanh(nn.Module):
         super().__init__()
         self.normalized_shape = normalized_shape
 
-        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value, dtype=torch.bfloat16)
+        self.weight = nn.Parameter(torch.ones(normalized_shape), dtype=torch.bfloat16)
+        self.bias = nn.Parameter(torch.zeros(normalized_shape), dtype=torch.bfloat16)
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.tanh(self.alpha * x) * self.weight + self.bias
