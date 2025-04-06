@@ -164,14 +164,13 @@ wheels = [
 [[package]]
 name = "modded-nanogpt"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub", marker = "sys_platform == 'linux'" },
     { name = "numpy", marker = "sys_platform == 'linux'" },
     { name = "pip", marker = "sys_platform == 'linux'" },
     { name = "pytorch-triton", marker = "sys_platform == 'linux'" },
     { name = "rich", marker = "sys_platform == 'linux'" },
-    { name = "tensorboard", marker = "sys_platform == 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'" },
     { name = "tqdm", marker = "sys_platform == 'linux'" },
 ]
@@ -188,7 +187,6 @@ requires-dist = [
     { name = "pip", specifier = ">=24.3.1" },
     { name = "pytorch-triton", specifier = ">=3.2.0", index = "https://download.pytorch.org/whl/nightly/cu126" },
     { name = "rich", specifier = ">=14.0.0" },
-    { name = "tensorboard", specifier = ">=2.19.0" },
     { name = "torch", url = "https://download.pytorch.org/whl/nightly/cu126/torch-2.6.0.dev20241231%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl" },
     { name = "tqdm", specifier = ">=4.67.0" },
 ]

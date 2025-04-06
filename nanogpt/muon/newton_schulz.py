@@ -1,11 +1,11 @@
-__all__ = ["zeropower_via_newtonschulz5"]
+__all__ = ["newton_schulz"]
 
 import torch
 from torch import Tensor
 
 
 @torch.compile
-def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
+def newton_schulz(G: Tensor, steps: int) -> Tensor:
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
     quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
@@ -16,6 +16,7 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
     performance at all relative to UV^T, where USV^T = G is the SVD.
     """
     assert G.ndim >= 2  # batched Muon implementation by @scottjmaddox, and put into practice in the record by @YouJiacheng
+    print(G.shape)
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
     if G.size(-2) > G.size(-1):

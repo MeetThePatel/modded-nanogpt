@@ -2,10 +2,14 @@ __all__ = ["Muon"]
 
 import torch
 import torch.distributed as dist
-from torch.utils.tensorboard import SummaryWriter
 from torch import Tensor
 
-from .newton_schulz import zeropower_via_newtonschulz5
+try:
+    import newton_schulz
+except ImportError as _:
+    print("Failed to import newton_schulz. Falling back to torch.compile.")
+    print("Be sure to run `python setup.py build_ext --inplace` in nanogpt/muon/ first.")
+    from .newton_schulz import newton_schulz
 
 
 class Muon(torch.optim.Optimizer):
@@ -31,85 +35,71 @@ class Muon(torch.optim.Optimizer):
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
 
-    def __init__(
-        self,
-        params,
-        lr=0.02,
-        momentum=0.95,
-        nesterov=True,
-        ns_steps=5,
-        rank=0,
-        world_size=1,
-    ):
+    def __init__(self, params, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
         self.rank = rank
         self.world_size = world_size
+        defaults = dict(momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
 
-        self.step_count = 0
-        self.writer = SummaryWriter("muon_tensorboard_logs/3e-4")
+        mlp_params = params[0]["params"]
+        mlp_lr = params[0]["lr"]
+        attn_params = params[1]["params"]
+        attn_lr = params[1]["lr"]
 
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
-        params: list[Tensor] = [*params]
         param_groups = []
-        for size in {p.numel() for (n, p) in params}:
+        for size in {p.numel() for (_, p) in mlp_params}:
+            group_params = [(n, p) for (n, p) in mlp_params if p.numel() == size]
             b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
             group = dict(
-                params=[p for (n, p) in params if p.numel() == size],
-                params_names=[n for (n, p) in params if p.numel() == size],
+                params=[p for (_, p) in group_params],
+                param_names=[n for (n, _) in group_params],
                 update_buffer=b,
                 update_buffer_views=[b[i] for i in range(world_size)],
+                lr=mlp_lr,
+            )
+            param_groups.append(group)
+        for size in {p.numel() for (_, p) in attn_params}:
+            group_params = [(n, p) for (n, p) in attn_params if p.numel() == size]
+            b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
+            group = dict(
+                params=[p for (_, p) in group_params],
+                param_names=[n for (n, _) in group_params],
+                update_buffer=b,
+                update_buffer_views=[b[i] for i in range(world_size)],
+                lr=attn_lr,
             )
             param_groups.append(group)
         super().__init__(param_groups, defaults)
 
     @torch.no_grad()
     def step(self):
-        self.step_count += 1
         for group in self.param_groups:
             update_buffer: Tensor = group["update_buffer"]
             update_buffer_views: list[Tensor] = group["update_buffer_views"]
             # generate weight updates in distributed fashion
             params: list[Tensor] = group["params"]
-            params_names: list[str] = group["params_names"]
             handle = None
             params_world = None
 
             def update_prev():  # optimized Muon implementation contributed by @YouJiacheng
                 handle.wait()
                 for p_world, g_world in zip(params_world, update_buffer_views):
-                    p_world.add_(
-                        g_world.view_as(p_world),
-                        alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5,
-                    )
+                    p_world.add_(g_world.view_as(p_world), alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
 
             for base_i in range(len(params))[:: self.world_size]:
                 if base_i + self.rank < len(params):
                     p = params[base_i + self.rank]
-                    name = params_names[base_i + self.rank]
+
                     g = p.grad
                     assert g is not None
+
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
                     buf: Tensor = state["momentum_buffer"]
+
                     buf.lerp_(g, 1 - group["momentum"])
                     g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"]).flatten()
-
-                    if "prev_grad" in state:
-                        prev_grad = state["prev_grad"].flatten()
-                        cos_sim = torch.dot(g, prev_grad) / (torch.norm(prev_grad) * torch.norm(g))
-                        cos_sim = cos_sim.item()
-
-                        if "cosine_similarity" not in state:
-                            state["cosine_similarity"] = []
-
-                        state["cosine_similarity"].append(cos_sim)
-                        if len(state["cosine_similarity"]) > 5:
-                            state["cosine_similarity"].pop(0)
-
-                        self.writer.add_scalar(f"cosine_sim/{name}", cos_sim, self.step_count)
-
-                    state["prev_grad"] = g.clone().detach()
+                    g = newton_schulz(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
                 if base_i > 0:

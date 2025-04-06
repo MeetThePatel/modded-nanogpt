@@ -1,0 +1,5 @@
+{
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/.venv/lib/python3.12/site-packages/torch/include"
+    ]
+}

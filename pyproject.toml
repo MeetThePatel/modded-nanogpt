@@ -30,3 +30,10 @@ explicit = true
 
 [dependency-groups]
 dev = ["tensorboard>=2.19.0"]
+
+[build-system]
+requires = [
+    "setuptools",
+    "torch",
+]
+build-backend = "setuptools.build_meta"
