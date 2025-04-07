@@ -1,12 +1,15 @@
 __all__ = ["Block"]
 
+import os
+from contextlib import nullcontext
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 
-from .mlp import MLP
 from .causal_self_attention import CausalSelfAttention
+from .mlp import MLP
 
 
 class Block(nn.Module):
@@ -30,10 +33,29 @@ class Block(nn.Module):
         x0: Tensor,
         block_mask: BlockMask,
     ):
-        x = self.lambdas[0] * x + self.lambdas[1] * x0
+        profiling = os.getenv("PROFILE") == "1"
+
+        with torch.cuda.nvtx.range("Block") if profiling else nullcontext():
+            x = self.lambdas[0] * x + self.lambdas[1] * x0
+
         if self.attn is not None:
-            x = x + self.attn(Block.norm(x), ve, block_mask)
-        x = x + self.mlp(Block.norm(x))
+            with torch.cuda.nvtx.range("Block attention") if profiling else nullcontext():
+                with torch.cuda.nvtx.range("Block attention prenorm") if profiling else nullcontext():
+                    attn_normed = Block.norm(x)
+
+                with torch.cuda.nvtx.range("Block attention") if profiling else nullcontext():
+                    attn_resid = self.attn(attn_normed, ve, block_mask)
+
+                x = x + attn_resid
+
+        with torch.cuda.nvtx.range("Block mlp") if profiling else nullcontext():
+            with torch.cuda.nvtx.range("Block mlp prenorm") if profiling else nullcontext():
+                mlp_normed = Block.norm(x)
+
+            with torch.cuda.nvtx.range("Block mlp") if profiling else nullcontext():
+                mlp_resid = self.mlp(mlp_normed)
+
+            x = x + mlp_resid
         return x
 
     @staticmethod

@@ -1,13 +1,16 @@
 __all__ = ["NanoGPT"]
 
+import os
+from contextlib import nullcontext
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 
-from .layers.casted_linear import CastedLinear
-from .layers.block import Block
 from .helpers import next_multiple_of_n
+from .layers.block import Block
+from .layers.casted_linear import CastedLinear
 
 
 class NanoGPT(nn.Module):
@@ -86,52 +89,69 @@ class NanoGPT(nn.Module):
         return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
 
     def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
-        assert input_seq.ndim == 1
+        profiling = os.getenv("PROFILE") == "1"
 
-        ve = [value_embed(input_seq) for value_embed in self.value_embeds]
-        # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
-        ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
-        assert len(ve) == len(self.blocks)
+        with torch.cuda.nvtx.range("NanoGPT Forward") if profiling else nullcontext():
+            assert input_seq.ndim == 1
 
-        long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
-        block_masks = [
-            long_bm,
-            short_bm,
-            short_bm,
-            short_bm,
-            long_bm,
-            short_bm,
-            short_bm,
-            long_bm,
-            short_bm,
-            short_bm,
-            short_bm,
-            long_bm,
-        ]
-        assert len(block_masks) == len(self.blocks)
+            with torch.cuda.nvtx.range("Value Embeddings") if profiling else nullcontext():
+                ve = [value_embed(input_seq) for value_embed in self.value_embeds]
+                # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
+                ve = [ve[0], ve[1], ve[2]] + [None] * (len(self.blocks) - 6) + [ve[0], ve[1], ve[2]]
+                assert len(ve) == len(self.blocks)
 
-        x = x0 = NanoGPT.norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
+            with torch.cuda.nvtx.range("Create Block Masks") if profiling else nullcontext():
+                long_bm, short_bm = self.create_blockmasks(input_seq, sliding_window_num_blocks)
+                block_masks = [
+                    long_bm,
+                    short_bm,
+                    short_bm,
+                    short_bm,
+                    long_bm,
+                    short_bm,
+                    short_bm,
+                    long_bm,
+                    short_bm,
+                    short_bm,
+                    short_bm,
+                    long_bm,
+                ]
+                assert len(block_masks) == len(self.blocks)
 
-        # U-net design by @brendanh0gan
-        skip_connections = []
-        n = len(self.skip_weights)
-        for i in range(len(self.blocks)):
-            if i >= n:
-                x = x + self.skip_weights[i - n] * skip_connections.pop()
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            if i < n:
-                skip_connections.append(x)
+            with torch.cuda.nvtx.range("Initial Embedding and Norm") if profiling else nullcontext():
+                x = x0 = NanoGPT.norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
-        x = NanoGPT.norm(x)
-        logits = self.lm_head(x).float()
-        # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
-        logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1) ** 0.5))
-        loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            target_seq,
-            reduction="sum" if self.training else "mean",
-        )
-        return loss
+            with torch.cuda.nvtx.range("U-Net Blocks with Skip Connections") if profiling else nullcontext():
+                # U-net design by @brendanh0gan
+                skip_connections = []
+                n = len(self.skip_weights)
+                for i in range(len(self.blocks)):
+                    with torch.cuda.nvtx.range(f"Skip Connection Add (Layer {i})") if profiling else nullcontext():
+                        if i >= n:
+                            x = x + self.skip_weights[i - n] * skip_connections.pop()
+
+                    with torch.cuda.nvtx.range(f"Block {i} Forward") if profiling else nullcontext():
+                        x = self.blocks[i](x, ve[i], x0, block_masks[i])
+
+                    if i < n:
+                        skip_connections.append(x)
+
+            with torch.cuda.nvtx.range("Final Normalization") if profiling else nullcontext():
+                x = NanoGPT.norm(x)
+
+            with torch.cuda.nvtx.range("Logits Computation with Softcapping") if profiling else nullcontext():
+                logits = self.lm_head(x).float()
+                # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
+                logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1) ** 0.5))
+
+            with torch.cuda.nvtx.range("Cross Entropy Loss") if profiling else nullcontext():
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    target_seq,
+                    reduction="sum" if self.training else "mean",
+                )
+
+            return loss
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:

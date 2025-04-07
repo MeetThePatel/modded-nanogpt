@@ -1,5 +1,8 @@
 __all__ = ["CastedLinear"]
 
+import os
+from contextlib import nullcontext
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -28,9 +31,16 @@ class CastedLinear(nn.Linear):
             self.weight.uniform_(-bound, bound)
 
     def forward(self, x: Tensor):
-        if self.use_fp8 and self.training:
-            _x = x.flatten(0, -2)
-            out: Tensor = torch.ops.nanogpt.mm(_x, self.weight, x_s=self.x_s, w_s=self.w_s, grad_s=self.grad_s)[0]
-            return out.reshape(*x.shape[:-1], -1)
-        else:
-            return F.linear(x, self.weight.type_as(x))
+        profiling = os.getenv("PROFILE") == "1"
+
+        with torch.cuda.nvtx.range("CastedLinear forward") if profiling else nullcontext():
+            if self.use_fp8 and self.training:
+                with torch.cuda.nvtx.range("Flatten") if profiling else nullcontext():
+                    _x = x.flatten(0, -2)
+
+                with torch.cuda.nvtx.range("nanogpt::mm") if profiling else nullcontext():
+                    out: Tensor = torch.ops.nanogpt.mm(_x, self.weight, x_s=self.x_s, w_s=self.w_s, grad_s=self.grad_s)[0]
+
+                return out.reshape(*x.shape[:-1], -1)
+            else:
+                return F.linear(x, self.weight.type_as(x))
