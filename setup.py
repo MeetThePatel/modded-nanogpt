@@ -1,54 +1,38 @@
 import os
-import torch
-import glob
-import sys
+import subprocess
+from pathlib import Path
 
 from setuptools import setup, find_packages
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension, CUDA_HOME
+this_dir = os.path.dirname(os.path.abspath(__file__))
 
-library_name = "nanogpt"
-
-
-def get_extensions():
-    debug_mode = os.getenv("DEBUG", 0) == "1"
-    extra_link_args = []
-    extra_compile_args = {
-        "cxx": [
-            "-O3" if not debug_mode else "-O0",
-            "-fdiagnostics-color=always",
-            "-DPy_LIMITED_API=0x03090000",
-        ],
-        "nvcc": ["-O3" if not debug_mode else "-O0"],
-    }
-    if debug_mode:
-        extra_compile_args["cxx"].append("-g")
-        extra_compile_args["nvcc"].append("-g")
-        extra_link_args.extend(["-O0", "-g"])
-
-    this_dir = os.path.dirname(os.path.curdir)
-    extensions_dir = os.path.join(this_dir, library_name, "csrc")
-    cpp_sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
-    cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
-
-    sources = cpp_sources + cuda_sources
-
-    ext_modules = [
-        CUDAExtension(
-            f"{library_name}._C",
-            sources,
-            extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
-        )
-    ]
-    return ext_modules
+if os.path.isdir(".git"):
+    subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"], check=True)
 
 
 setup(
-    name=library_name,
-    version="0.0.1",
-    packages=find_packages(),
-    ext_modules=get_extensions(),
-    install_requires=["torch"],
-    cmdclass={"build_ext", BuildExtension},
+    name="nanogpt",
+    packages=find_packages(exclude=("csrc", "data", "img", "records", "logs")),
+    ext_modules=[
+        CUDAExtension(
+            name="nanogpt_cuda",
+            sources=[
+                "csrc/nanogpt/newton_schulz.cpp",
+                "csrc/nanogpt/newton_schulz.cu",
+            ],
+            extra_compile_args={
+                "cxx": ["-O3", "-std=c++17"],
+                "nvcc": [
+                    "-O3",
+                    "-std=c++17",
+                ],
+            },
+            include_dirs=[
+                Path(this_dir) / "csrc" / "nanogpt",
+                Path(this_dir) / "csrc" / "cutlass" / "include",
+            ],
+        )
+    ],
+    cmdclass={"build_ext": BuildExtension},
 )
