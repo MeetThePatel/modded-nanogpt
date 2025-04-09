@@ -2,6 +2,7 @@ __all__ = ["newton_schulz"]
 
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 
 
 @torch.compile
@@ -16,14 +17,13 @@ def newton_schulz(G: Tensor, steps: int) -> Tensor:
     performance at all relative to UV^T, where USV^T = G is the SVD.
     """
     assert G.ndim >= 2  # batched Muon implementation by @scottjmaddox, and put into practice in the record by @YouJiacheng
-    print(G.shape)
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
     if G.size(-2) > G.size(-1):
         X = X.mT
 
-    # Ensure spectral norm is at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+    X = F.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
+
     # Perform the NS iterations
     for _ in range(steps):
         A = X @ X.mT

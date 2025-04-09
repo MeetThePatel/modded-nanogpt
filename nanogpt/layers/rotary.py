@@ -19,11 +19,12 @@ class Rotary(nn.Module):
         self.sin = nn.Buffer(theta.sin(), persistent=False)
 
     def forward(self, x_BTHD: Tensor):
-        profiling = os.getenv("PROFILE") == "1"
+        # profiling = os.getenv("NANOGPT_PROFILE") == "1"
 
         assert self.cos.size(0) >= x_BTHD.size(-3)
 
-        with torch.cuda.nvtx.range("RoPE") if profiling else nullcontext():
+        # with torch.cuda.nvtx.range("RoPE") if profiling else nullcontext():
+        with torch.cuda.nvtx.range("RoPE"):
             cos, sin = (
                 self.cos[None, : x_BTHD.size(-3), None, :],
                 self.sin[None, : x_BTHD.size(-3), None, :],

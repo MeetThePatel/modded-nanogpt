@@ -28,7 +28,7 @@ class Hyperparameters:
     train_files = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    train_seq_len = 36 * 1024  # FlexAttention sequence length
+    train_seq_len = 16 * 1024  # FlexAttention sequence length
     val_seq_len = 32 * 1024  # FlexAttention sequence length for validation
     # optimization
     num_iterations = 1000  # number of iterations to run
@@ -195,7 +195,9 @@ def main(logger: DistributedLogger):
         # --------------- TRAINING SECTION -----------------
         inputs, targets = next(train_loader)
         loss = model(inputs, targets, get_window_size_blocks(step, args.num_iterations))
-        loss.backward()
+        with torch.cuda.nvtx.range("NanoGPT Backward"):
+            loss.backward()
+            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
         # set optimization hyperparameters
@@ -205,8 +207,12 @@ def main(logger: DistributedLogger):
             frac = min(step / 300, 1)  # momentum warmup for muon
             group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
         # step the optimizers
-        adam_optimizer.step()
-        muon_optimizer.step()
+        with torch.cuda.nvtx.range("Adam Step"):
+            adam_optimizer.step()
+            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
+        with torch.cuda.nvtx.range("Muon Step"):
+            muon_optimizer.step()
+            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
         # null the gradients
         model.zero_grad(set_to_none=True)
         # logging

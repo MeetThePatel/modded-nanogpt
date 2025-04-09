@@ -31,14 +31,17 @@ class CastedLinear(nn.Linear):
             self.weight.uniform_(-bound, bound)
 
     def forward(self, x: Tensor):
-        profiling = os.getenv("PROFILE") == "1"
+        # profiling = os.getenv("NANOGPT_PROFILE") == "1"
 
-        with torch.cuda.nvtx.range("CastedLinear forward") if profiling else nullcontext():
+        # with torch.cuda.nvtx.range("CastedLinear forward") if profiling else nullcontext():
+        with torch.cuda.nvtx.range("CastedLinear forward"):
             if self.use_fp8 and self.training:
-                with torch.cuda.nvtx.range("Flatten") if profiling else nullcontext():
+                # with torch.cuda.nvtx.range("Flatten") if profiling else nullcontext():
+                with torch.cuda.nvtx.range("Flatten"):
                     _x = x.flatten(0, -2)
 
-                with torch.cuda.nvtx.range("nanogpt::mm") if profiling else nullcontext():
+                # with torch.cuda.nvtx.range("nanogpt::mm") if profiling else nullcontext():
+                with torch.cuda.nvtx.range("nanogpt::mm"):
                     out: Tensor = torch.ops.nanogpt.mm(_x, self.weight, x_s=self.x_s, w_s=self.w_s, grad_s=self.grad_s)[0]
 
                 return out.reshape(*x.shape[:-1], -1)

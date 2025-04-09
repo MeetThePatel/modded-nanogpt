@@ -4,12 +4,7 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-try:
-    import newton_schulz
-except ImportError as _:
-    print("Failed to import newton_schulz. Falling back to torch.compile.")
-    print("Be sure to run `python setup.py build_ext --inplace` in nanogpt/muon/ first.")
-    from .newton_schulz import newton_schulz
+from .newton_schulz import newton_schulz
 
 
 class Muon(torch.optim.Optimizer):
@@ -97,9 +92,12 @@ class Muon(torch.optim.Optimizer):
                         state["momentum_buffer"] = torch.zeros_like(g)
                     buf: Tensor = state["momentum_buffer"]
 
-                    buf.lerp_(g, 1 - group["momentum"])
-                    g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    g = newton_schulz(g, steps=group["ns_steps"]).flatten()
+                    with torch.cuda.nvtx.range("Update buffer"):
+                        buf.lerp_(g, 1 - group["momentum"])
+                    with torch.cuda.nvtx.range("Nesterov"):
+                        g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                    with torch.cuda.nvtx.range("NS5"):
+                        g = newton_schulz(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
                 if base_i > 0:
