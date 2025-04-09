@@ -11,7 +11,7 @@ from torch import nn
 from nanogpt import Muon, NanoGPT
 from nanogpt.dataloader import distributed_data_generator
 from nanogpt.helpers import get_window_size_blocks
-from nanogpt.logging import DistributedLogger, collect_code_snapshot, log_system_info
+from nanogpt.logging import DistributedLogger, collect_code_snapshot, log_system_info, create_parameter_count_table
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.manual_seed(42)
@@ -69,6 +69,8 @@ def main(logger: DistributedLogger):
         m.bfloat16()
     for param in model.parameters():
         dist.broadcast(param.detach(), 0)
+
+    logger.log("\n" + create_parameter_count_table(model), print_to_console=True)
 
     # collect the parameters to optimize
     # hidden_matrix_params = [(n, p) for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
@@ -241,4 +243,5 @@ if __name__ == "__main__":
 
     code = collect_code_snapshot(base_dir)
     logger.log("\n" + code)
+
     main(logger)

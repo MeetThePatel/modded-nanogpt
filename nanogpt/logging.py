@@ -7,6 +7,8 @@ import sys
 
 import torch
 
+from nanogpt.nanogpt import NanoGPT
+
 INCLUDE_EXTENSIONS = [".py"]
 INCLUDE_DIRS = ["nanogpt"]
 EXCLUDE_DIRS = ["__pycache__"]
@@ -213,6 +215,36 @@ def log_system_info():
         sys.stdout = devnull
         try:
             console.print(table)
+        finally:
+            sys.stdout = original_stdout
+
+    return console.export_text()
+
+
+def create_parameter_count_table(model: NanoGPT):
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="Model Parameters")
+    table.add_column("Modules", justify="left")
+    table.add_column("Parameters", justify="right")
+
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        params = parameter.numel()
+        table.add_row(name, str(params))
+        total_params += params
+
+    console = Console(record=True)
+
+    with open(os.devnull, "w") as devnull:
+        original_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            console.print(table)
+            console.print(f"Total Trainable Params: {total_params}")
         finally:
             sys.stdout = original_stdout
 

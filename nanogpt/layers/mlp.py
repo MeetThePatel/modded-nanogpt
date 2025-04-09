@@ -1,9 +1,6 @@
 __all__ = ["MLP", "ScaledReLU2"]
 
 
-import os
-from contextlib import nullcontext
-
 import torch
 from torch import Tensor, nn
 

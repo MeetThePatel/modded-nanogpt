@@ -1,8 +1,5 @@
 __all__ = ["Rotary"]
 
-import os
-from contextlib import nullcontext
-
 import torch
 from torch import Tensor, nn
 
