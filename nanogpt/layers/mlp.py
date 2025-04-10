@@ -17,21 +17,12 @@ class MLP(nn.Module):
         self.act = ScaledReLU2(beta_init=1.0)
 
     def forward(self, x: Tensor):
-        # profiling = os.getenv("NANOGPT_PROFILE") == "1"
+        x = self.c_fc(x)
 
-        # with torch.cuda.nvtx.range("MLP c_fc") if profiling else nullcontext():
-        with torch.cuda.nvtx.range("MLP c_fc"):
-            x = self.c_fc(x)
+        # x = F.relu(x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        x = self.act(x)
 
-        # with torch.cuda.nvtx.range("MLP activation") if profiling else nullcontext():
-        with torch.cuda.nvtx.range("MLP activation"):
-            # x = F.relu(x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-            x = self.act(x)
-
-        # with torch.cuda.nvtx.range("MLP c_proj") if profiling else nullcontext():
-        with torch.cuda.nvtx.range("MLP c_proj"):
-            x = self.c_proj(x)
-
+        x = self.c_proj(x)
         return x
 
 

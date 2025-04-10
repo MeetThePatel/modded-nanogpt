@@ -19,7 +19,7 @@ torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug o
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 
-RUN_NAME = ""
+RUN_NAME = "model_dim=192;n_heads=6;head_dim=32;steps=500"
 
 
 @dataclass
@@ -28,10 +28,10 @@ class Hyperparameters:
     train_files = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
     val_tokens = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    train_seq_len = 16 * 1024  # FlexAttention sequence length
+    train_seq_len = 32 * 1024  # FlexAttention sequence length
     val_seq_len = 32 * 1024  # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 1000  # number of iterations to run
+    num_iterations = 500  # number of iterations to run
     cooldown_frac = 0.4  # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -43,6 +43,8 @@ class Hyperparameters:
 def main(logger: DistributedLogger):
     args = Hyperparameters()
     writer = SummaryWriter(log_dir=f"./muon_tensorboard_logs/{RUN_NAME}")
+    train_time_origin = time.time()
+    train_time = 0.0
 
     # torchrun sets these env variables
     rank = int(os.environ["RANK"])
@@ -62,7 +64,7 @@ def main(logger: DistributedLogger):
         vocab_size=args.vocab_size,
         num_layers=12,
         num_heads=6,
-        model_dim=768,
+        model_dim=192,
         max_seq_len=max(args.train_seq_len, args.val_seq_len),
     ).cuda()
     for m in model.modules():
@@ -151,6 +153,7 @@ def main(logger: DistributedLogger):
     # begin training
     train_steps = args.num_iterations
     for step in range(train_steps + 1):
+        start_time = time.time()
         last_step = step == train_steps
 
         # --------------- VALIDATION SECTION -----------------
@@ -197,9 +200,7 @@ def main(logger: DistributedLogger):
         # --------------- TRAINING SECTION -----------------
         inputs, targets = next(train_loader)
         loss = model(inputs, targets, get_window_size_blocks(step, args.num_iterations))
-        with torch.cuda.nvtx.range("NanoGPT Backward"):
-            loss.backward()
-            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
+        loss.backward()
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
         # set optimization hyperparameters
@@ -209,19 +210,17 @@ def main(logger: DistributedLogger):
             frac = min(step / 300, 1)  # momentum warmup for muon
             group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
         # step the optimizers
-        with torch.cuda.nvtx.range("Adam Step"):
-            adam_optimizer.step()
-            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
-        with torch.cuda.nvtx.range("Muon Step"):
-            muon_optimizer.step()
-            torch.cuda.synchronize()  # TODO: REMOVE THIS AFTER DONE PROFILING!!!!!
+        adam_optimizer.step()
+        muon_optimizer.step()
         # null the gradients
         model.zero_grad(set_to_none=True)
         # logging
+        step_time = time.time() - start_time
+        train_time += step_time
         approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
-        writer.add_scalar("adam_learning_rate", adam_optimizer.param_groups[0]["lr"], step)
-        writer.add_scalar("muon_learning_rate", muon_optimizer.param_groups[0]["lr"], step)
-        writer.add_scalar("train_loss", loss.item(), step)
+        writer.add_scalar("adam_learning_rate", adam_optimizer.param_groups[0]["lr"], global_step=step, walltime=train_time_origin + train_time)
+        writer.add_scalar("muon_learning_rate", muon_optimizer.param_groups[0]["lr"], global_step=step, walltime=train_time_origin + train_time)
+        writer.add_scalar("train_loss", loss.item(), global_step=step, walltime=train_time_origin + train_time)
         logger.log(
             f"step:{step + 1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / (step + 1):.2f}ms",
             print_to_console=True,

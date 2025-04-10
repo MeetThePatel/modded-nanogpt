@@ -155,10 +155,15 @@ def collect_code_snapshot(base_dir, include_extensions=None, include_dirs=None, 
     for root, _, files in os.walk(base_dir):
         relative_root = os.path.relpath(root, base_dir)
 
-        if any(exclude_dir in relative_root.split(os.sep) for exclude_dir in exclude_dirs):
+        # Normalize path to prevent inconsistent matching
+        normalized_root = relative_root.replace("\\", "/")  # cross-platform
+
+        # Skip excluded dirs
+        if any(normalized_root.startswith(ed) for ed in exclude_dirs):
             continue
 
-        if not any(relative_root.startswith(include_dir) for include_dir in include_dirs):
+        # Skip non-included dirs (except base dir)
+        if normalized_root != "." and not any(normalized_root.startswith(idir) for idir in include_dirs):
             continue
 
         for file in files:
@@ -167,13 +172,11 @@ def collect_code_snapshot(base_dir, include_extensions=None, include_dirs=None, 
                 relative_path = os.path.relpath(file_path, base_dir)
 
                 snapshot.append(f"{'#' * 80}\n## {relative_path}\n{'#' * 80}\n")
-
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         snapshot.append(f.read())
                 except Exception as e:
                     snapshot.append(f"Error reading file: {e}\n")
-
                 snapshot.append("\n\n")
 
     return "".join(snapshot)

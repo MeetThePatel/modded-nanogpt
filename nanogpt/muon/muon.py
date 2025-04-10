@@ -92,12 +92,9 @@ class Muon(torch.optim.Optimizer):
                         state["momentum_buffer"] = torch.zeros_like(g)
                     buf: Tensor = state["momentum_buffer"]
 
-                    with torch.cuda.nvtx.range("Update buffer"):
-                        buf.lerp_(g, 1 - group["momentum"])
-                    with torch.cuda.nvtx.range("Nesterov"):
-                        g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                    with torch.cuda.nvtx.range("NS5"):
-                        g = newton_schulz(g, steps=group["ns_steps"]).flatten()
+                    buf.lerp_(g, 1 - group["momentum"])
+                    g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+                    g = newton_schulz(g, steps=group["ns_steps"]).flatten()
                 else:
                     g = update_buffer_views[self.rank]
                 if base_i > 0:

@@ -30,36 +30,16 @@ class Block(nn.Module):
         x0: Tensor,
         block_mask: BlockMask,
     ):
-        # profiling = os.getenv("NANOGPT_PROFILE") == "1"
-
-        # with torch.cuda.nvtx.range("Block") if profiling else nullcontext():
-        with torch.cuda.nvtx.range("Block"):
-            x = self.lambdas[0] * x + self.lambdas[1] * x0
+        x = self.lambdas[0] * x + self.lambdas[1] * x0
 
         if self.attn is not None:
-            # with torch.cuda.nvtx.range("Block attention") if profiling else nullcontext():
-            with torch.cuda.nvtx.range("Block attention"):
-                # with torch.cuda.nvtx.range("Block attention prenorm") if profiling else nullcontext():
-                with torch.cuda.nvtx.range("Block attention prenorm"):
-                    attn_normed = Block.norm(x)
+            attn_normed = Block.norm(x)
+            attn_resid = self.attn(attn_normed, ve, block_mask)
+            x = x + attn_resid
 
-                # with torch.cuda.nvtx.range("Block attention") if profiling else nullcontext():
-                with torch.cuda.nvtx.range("Block attention"):
-                    attn_resid = self.attn(attn_normed, ve, block_mask)
-
-                x = x + attn_resid
-
-        # with torch.cuda.nvtx.range("Block mlp") if profiling else nullcontext():
-        with torch.cuda.nvtx.range("Block mlp"):
-            # with torch.cuda.nvtx.range("Block mlp prenorm") if profiling else nullcontext():
-            with torch.cuda.nvtx.range("Block mlp prenorm"):
-                mlp_normed = Block.norm(x)
-
-            # with torch.cuda.nvtx.range("Block mlp") if profiling else nullcontext():
-            with torch.cuda.nvtx.range("Block mlp"):
-                mlp_resid = self.mlp(mlp_normed)
-
-            x = x + mlp_resid
+        mlp_normed = Block.norm(x)
+        mlp_resid = self.mlp(mlp_normed)
+        x = x + mlp_resid
         return x
 
     @staticmethod
