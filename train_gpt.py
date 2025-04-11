@@ -19,7 +19,7 @@ torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug o
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 
-RUN_NAME = "hyperclone;ALL;reference"
+RUN_NAME = "hyperclone;ALL;with-hyperclone;FULL"
 
 
 @dataclass
@@ -62,8 +62,8 @@ def main(logger: DistributedLogger):
         vocab_size=args.vocab_size,
         num_layers=12,
         num_heads=6,
-        head_dim=64,
-        model_dim=384,
+        head_dim=128,
+        model_dim=768,
         max_seq_len=max(args.train_seq_len, args.val_seq_len),
     ).cuda()
     for m in model.modules():
@@ -228,25 +228,28 @@ def main(logger: DistributedLogger):
             print_to_console=True,
         )
 
-    # model.hyperclone_()
-    # model.eval()
-    # val_batch_size = world_size * args.val_seq_len
-    # assert args.val_tokens % val_batch_size == 0
-    # val_steps = args.val_tokens // val_batch_size
-    # val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
-    # val_loss = 0
-    # with torch.no_grad():
-    #     for _ in range(val_steps):
-    #         inputs, targets = next(val_loader)
-    #         val_loss += model(inputs, targets, get_window_size_blocks(step, args.num_iterations))
-    # val_loss /= val_steps
-    # del val_loader
-    # dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-    # writer.add_scalar("val_loss", val_loss.item(), step + 1)
-    # logger.log(
-    #     f"step:{step + 1000}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
-    #     print_to_console=True,
-    # )
+    before_hyperclone_time = time.perf_counter()
+    model.hyperclone_()
+    after_hyperclone_time = time.perf_counter()
+    print(f"Time to hyperclone (ms): {(after_hyperclone_time - before_hyperclone_time) * 1000}")
+    model.eval()
+    val_batch_size = world_size * args.val_seq_len
+    assert args.val_tokens % val_batch_size == 0
+    val_steps = args.val_tokens // val_batch_size
+    val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
+    val_loss = 0
+    with torch.no_grad():
+        for _ in range(val_steps):
+            inputs, targets = next(val_loader)
+            val_loss += model(inputs, targets, get_window_size_blocks(step, args.num_iterations))
+    val_loss /= val_steps
+    del val_loader
+    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+    writer.add_scalar("val_loss", val_loss.item(), step + 1)
+    logger.log(
+        f"step:{step + 1000}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
+        print_to_console=True,
+    )
 
     logger.log(
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "

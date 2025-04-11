@@ -22,6 +22,7 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
+        self.max_seq_len = max_seq_len
 
         self.dim = dim
         self.hdim = num_heads * head_dim
