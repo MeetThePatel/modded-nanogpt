@@ -34,3 +34,6 @@ class CastedLinear(nn.Linear):
             return out.reshape(*x.shape[:-1], -1)
         else:
             return F.linear(x, self.weight.type_as(x))
+
+    def hyperclone_(self):
+        self.weight = nn.Parameter((self.weight / 2).repeat(2, 2))

@@ -230,6 +230,7 @@ def create_parameter_count_table(model: NanoGPT):
 
     table = Table(title="Model Parameters")
     table.add_column("Modules", justify="left")
+    table.add_column("Shape", justify="right")
     table.add_column("Parameters", justify="right")
 
     total_params = 0
@@ -237,7 +238,8 @@ def create_parameter_count_table(model: NanoGPT):
         if not parameter.requires_grad:
             continue
         params = parameter.numel()
-        table.add_row(name, str(params))
+        shape = str(tuple(parameter.shape))
+        table.add_row(name, shape, str(params))
         total_params += params
 
     console = Console(record=True)

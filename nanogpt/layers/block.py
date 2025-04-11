@@ -14,12 +14,13 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
+        head_dim: int,
         max_seq_len: int,
         layer_idx: int,
     ):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len) if layer_idx != 7 else None
+        self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, head_dim) if layer_idx != 7 else None
         self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
 
@@ -41,6 +42,11 @@ class Block(nn.Module):
         mlp_resid = self.mlp(mlp_normed)
         x = x + mlp_resid
         return x
+
+    def hyperclone_(self):
+        if self.attn is not None:
+            self.attn.hyperclone_()
+        self.mlp.hyperclone_()
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:

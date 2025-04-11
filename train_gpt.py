@@ -19,7 +19,7 @@ torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug o
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 
-RUN_NAME = "model_dim=192;n_heads=6;head_dim=32;steps=500"
+RUN_NAME = "hyperclone;ALL;reference"
 
 
 @dataclass
@@ -43,8 +43,6 @@ class Hyperparameters:
 def main(logger: DistributedLogger):
     args = Hyperparameters()
     writer = SummaryWriter(log_dir=f"./muon_tensorboard_logs/{RUN_NAME}")
-    train_time_origin = time.time()
-    train_time = 0.0
 
     # torchrun sets these env variables
     rank = int(os.environ["RANK"])
@@ -64,7 +62,8 @@ def main(logger: DistributedLogger):
         vocab_size=args.vocab_size,
         num_layers=12,
         num_heads=6,
-        model_dim=192,
+        head_dim=64,
+        model_dim=384,
         max_seq_len=max(args.train_seq_len, args.val_seq_len),
     ).cuda()
     for m in model.modules():
@@ -94,7 +93,7 @@ def main(logger: DistributedLogger):
     ]
     # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
     # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
-    adam_optimizer = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
+    adam_optimizer = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, foreach=True)
     muon_optimizer = Muon(
         params=muon_params,
         momentum=0.95,
@@ -144,6 +143,9 @@ def main(logger: DistributedLogger):
     ########################################
     #        Training and validation       #
     ########################################
+
+    train_time_origin = time.time()
+    train_time = 0.0
 
     train_loader = distributed_data_generator(args.train_files, world_size * args.train_seq_len, rank, world_size)
     training_time_ms = 0
@@ -225,6 +227,27 @@ def main(logger: DistributedLogger):
             f"step:{step + 1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / (step + 1):.2f}ms",
             print_to_console=True,
         )
+
+    # model.hyperclone_()
+    # model.eval()
+    # val_batch_size = world_size * args.val_seq_len
+    # assert args.val_tokens % val_batch_size == 0
+    # val_steps = args.val_tokens // val_batch_size
+    # val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
+    # val_loss = 0
+    # with torch.no_grad():
+    #     for _ in range(val_steps):
+    #         inputs, targets = next(val_loader)
+    #         val_loss += model(inputs, targets, get_window_size_blocks(step, args.num_iterations))
+    # val_loss /= val_steps
+    # del val_loader
+    # dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+    # writer.add_scalar("val_loss", val_loss.item(), step + 1)
+    # logger.log(
+    #     f"step:{step + 1000}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
+    #     print_to_console=True,
+    # )
+
     logger.log(
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB",

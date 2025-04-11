@@ -1,4 +1,4 @@
-__all__ = ["MLP", "ScaledReLU2"]
+__all__ = ["MLP"]
 
 
 import torch
@@ -10,9 +10,10 @@ from .casted_linear import CastedLinear
 class MLP(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        hdim = 4 * dim
-        self.c_fc = CastedLinear(dim, hdim)
-        self.c_proj = CastedLinear(hdim, dim)
+        self.dim = dim
+        self.hdim = 4 * self.dim
+        self.c_fc = CastedLinear(self.dim, self.hdim)
+        self.c_proj = CastedLinear(self.hdim, self.dim)
         self.c_proj.weight.detach().zero_()  # zero init suggested by @Grad62304977
         self.act = ScaledReLU2(beta_init=1.0)
 
@@ -25,11 +26,17 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+    def hyperclone_(self):
+        self.c_fc.hyperclone_()
+        self.c_proj.hyperclone_()
+        self.dim *= 2
+        self.hdim *= 2
+
 
 class ScaledReLU2(nn.Module):
     def __init__(self, beta_init=1.0):
         super(ScaledReLU2, self).__init__()
-        self.beta = nn.Parameter(torch.tensor(beta_init))
+        self.beta = nn.Parameter(torch.tensor([beta_init]))
 
     def forward(self, x):
         return self.beta * torch.relu(x).pow(2)

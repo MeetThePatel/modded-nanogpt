@@ -6,8 +6,7 @@ from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 
 from .helpers import next_multiple_of_n
-from .layers.block import Block
-from .layers.casted_linear import CastedLinear
+from .layers import Block, CastedLinear, Embedding
 
 
 class NanoGPT(nn.Module):
@@ -16,15 +15,17 @@ class NanoGPT(nn.Module):
         vocab_size: int,
         num_layers: int,
         num_heads: int,
+        head_dim: int,
         model_dim: int,
         max_seq_len: int,
     ):
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, model_dim)
+        self.embed = Embedding(vocab_size, model_dim)
+
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([nn.Embedding(vocab_size, model_dim) for _ in range(3)])
-        self.blocks = nn.ModuleList([Block(model_dim, num_heads, max_seq_len, i) for i in range(num_layers)])
+        self.value_embeds = nn.ModuleList([Embedding(vocab_size, model_dim) for _ in range(3)])
+        self.blocks = nn.ModuleList([Block(model_dim, num_heads, head_dim, max_seq_len, i) for i in range(num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head = CastedLinear(
@@ -137,6 +138,14 @@ class NanoGPT(nn.Module):
         )
 
         return loss
+
+    def hyperclone_(self):
+        self.embed.hyperclone_()
+        for ve in self.value_embeds:
+            ve.hyperclone_()
+        for block in self.blocks:
+            block.hyperclone_()
+        self.lm_head.weight = nn.Parameter((self.lm_head.weight / 2).repeat(1, 2))
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:
