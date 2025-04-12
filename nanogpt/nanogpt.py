@@ -139,12 +139,12 @@ class NanoGPT(nn.Module):
 
         return loss
 
-    def hyperclone_(self):
+    def hyperclone_(self, dim: int = -1):
         self.embed.hyperclone_()
         for ve in self.value_embeds:
             ve.hyperclone_()
         for block in self.blocks:
-            block.hyperclone_()
+            block.hyperclone_(dim)
         self.lm_head.weight = nn.Parameter((self.lm_head.weight / 2).repeat(1, 2))
 
     @staticmethod

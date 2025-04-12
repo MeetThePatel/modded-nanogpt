@@ -26,11 +26,20 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
-    def hyperclone_(self):
-        self.c_fc.hyperclone_()
-        self.c_proj.hyperclone_()
-        self.dim *= 2
-        self.hdim *= 2
+    def hyperclone_(self, type: str = "full"):
+        if type == "full":
+            self.c_fc.hyperclone_()
+            self.c_proj.hyperclone_()
+            self.dim *= 2
+            self.hdim *= 2
+        elif type == "attn":
+            self.c_fc.hyperclone_(dim=1)
+            self.c_proj.hyperclone_(dim=0)
+            self.dim *= 2
+        elif type == "mlp":
+            self.c_fc.hyperclone_(dim=0)
+            self.c_proj.hyperclone_(dim=1)
+            self.hdim *= 2
 
 
 class ScaledReLU2(nn.Module):

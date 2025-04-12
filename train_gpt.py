@@ -2,6 +2,7 @@ import copy
 import os
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 import torch.distributed as dist
@@ -19,7 +20,7 @@ torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug o
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 
-RUN_NAME = "hyperclone;ALL;with-hyperclone;FULL"
+RUN_NAME = "hyperclone;ALL;with-hyperclone;tuning-lr"
 
 
 @dataclass
@@ -40,9 +41,21 @@ class Hyperparameters:
     save_checkpoint = False
 
 
+@dataclass
+class TrainerParams:
+    adam_head_lr: float
+    adam_embed_lr: float
+    adam_scalar_lr: float
+    muon_mlp_lr: float
+    muon_attn_lr: float
+
+    n_steps: int
+    lr_lambda: Callable[[int], float]
+
+
 def main(logger: DistributedLogger):
     args = Hyperparameters()
-    writer = SummaryWriter(log_dir=f"./muon_tensorboard_logs/{RUN_NAME}")
+    writer = SummaryWriter(log_dir=f"./logs/tensorboard/{RUN_NAME}")
 
     # torchrun sets these env variables
     rank = int(os.environ["RANK"])
@@ -62,8 +75,8 @@ def main(logger: DistributedLogger):
         vocab_size=args.vocab_size,
         num_layers=12,
         num_heads=6,
-        head_dim=128,
-        model_dim=768,
+        head_dim=32,
+        model_dim=192,
         max_seq_len=max(args.train_seq_len, args.val_seq_len),
     ).cuda()
     for m in model.modules():
@@ -74,7 +87,6 @@ def main(logger: DistributedLogger):
     logger.log("\n" + create_parameter_count_table(model), print_to_console=True)
 
     # collect the parameters to optimize
-    # hidden_matrix_params = [(n, p) for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
     hidden_matrix_params_mlp = [(n, p) for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n and "mlp" in n]
     hidden_matrix_params_attn = [(n, p) for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n and "attn" in n]
     head_params = [model.lm_head.weight]
@@ -88,8 +100,10 @@ def main(logger: DistributedLogger):
         dict(params=scalar_params, lr=0.04),
     ]
     muon_params = [
-        dict(params=hidden_matrix_params_mlp, lr=0.05),
-        dict(params=hidden_matrix_params_attn, lr=0.10),
+        # dict(params=hidden_matrix_params_mlp, lr=0.05),
+        # dict(params=hidden_matrix_params_attn, lr=0.10),
+        dict(params=hidden_matrix_params_mlp, lr=0.25),
+        dict(params=hidden_matrix_params_attn, lr=0.35),
     ]
     # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
     # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
@@ -110,7 +124,7 @@ def main(logger: DistributedLogger):
         x = step / args.num_iterations  # progress in training
         assert 0 <= x < 1
         if x < 1 - args.cooldown_frac:
-            return 1.0
+            return 1.5
         else:
             w = (1 - x) / args.cooldown_frac
             return w * 1.0 + (1 - w) * 0.1

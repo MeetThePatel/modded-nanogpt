@@ -43,10 +43,19 @@ class Block(nn.Module):
         x = x + mlp_resid
         return x
 
-    def hyperclone_(self):
-        if self.attn is not None:
-            self.attn.hyperclone_()
-        self.mlp.hyperclone_()
+    def hyperclone_(self, type: str = "full"):
+        if type == "full":
+            if self.attn is not None:
+                self.attn.hyperclone_(type)
+            self.mlp.hyperclone_(type)
+        elif type == "attn":
+            if self.attn is not None:
+                self.attn.hyperclone_(type)
+            self.mlp.hyperclone_(type)
+        elif type == "mlp":
+            if self.attn is not None:
+                self.attn.hyperclone_(type)
+            self.mlp.hyperclone_(type)
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:

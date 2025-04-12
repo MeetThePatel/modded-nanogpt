@@ -35,5 +35,13 @@ class CastedLinear(nn.Linear):
         else:
             return F.linear(x, self.weight.type_as(x))
 
-    def hyperclone_(self):
-        self.weight = nn.Parameter((self.weight / 2).repeat(2, 2))
+    def hyperclone_(self, dim: int = -1):
+        scaled = self.weight / 2
+        if dim == -1:
+            self.weight = nn.Parameter(scaled.repeat(2, 2))
+        elif dim == 0:
+            self.weight = nn.Parameter(scaled.repeat(2, 1))
+        elif dim == 1:
+            self.weight = nn.Parameter(scaled.repeat(1, 2))
+        else:
+            raise ValueError(f"hyperclone_ dim must be either -1 (default), 0, or 1. Recieved: {dim}")
