@@ -2,14 +2,14 @@ import copy
 import os
 import time
 from dataclasses import dataclass
-from typing import Callable, Generator
+from typing import Callable, Generator, List
 
 import torch
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from torch import nn
 
-from nanogpt import Muon, NanoGPT
+from nanogpt import Muon, NanoGPT, LambdaLRScheduler
 from nanogpt.dataloader import distributed_data_generator
 from nanogpt.helpers import get_window_size_blocks
 from nanogpt.logging import DistributedLogger, collect_code_snapshot, log_system_info, create_parameter_count_table
@@ -45,12 +45,12 @@ class TrainerParams:
     adam_head_lr: float
     adam_embed_lr: float
     adam_scalar_lr: float
-    adam_lr_lambda: Callable[[int, int], float]
+    adam_lr_lambda: Callable[..., float]
     adam_betas: tuple[float, float]
 
     muon_mlp_lr: float
     muon_attn_lr: float
-    muon_lr_lambda: Callable[[int, int], float]
+    muon_lr_lambda: Callable[..., float]
     muon_momentum: float
     muon_ns_steps: int
 
@@ -74,11 +74,11 @@ def train_stage(
     model: NanoGPT,
     train_params: TrainerParams,
     data_params: DataParams,
+    train_loader: Generator[tuple[torch.Tensor, torch.Tensor]],
     *,
     global_step: int,
     rank: int,
     world_size: int,
-    train_loader: Generator[tuple[torch.Tensor, torch.Tensor]],
     logger: DistributedLogger,
     tensorboard_writer: SummaryWriter,
 ):
@@ -113,26 +113,32 @@ def train_stage(
         rank=rank,
         world_size=world_size,
     )
-    optimizers = [adam_optimizer, muon_optimizer]
+    optimizers: List[torch.optim.Optimizer] = [adam_optimizer, muon_optimizer]
+
+    adam_scheduler = LambdaLRScheduler(adam_optimizer, train_params.adam_lr_lambda)
+    muon_scheduler = LambdaLRScheduler(muon_optimizer, train_params.muon_lr_lambda)
+    schedulers = [adam_scheduler, muon_scheduler]
 
     model: nn.Module = torch.compile(model, dynamic=False)
 
     # Warmup
     initial_state = dict(
         model=copy.deepcopy(model.state_dict()),
-        optimizers=[copy.deepcopy(opt.state_dict) for opt in optimizers],
+        optimizers=[copy.deepcopy(optimizer.state_dict) for optimizer in optimizers],
     )
     for _ in range(train_params.warmup_steps):
         inputs = targets = torch.randint(0, model.vocab_size, size=(data_params.train_seq_len,), device="cuda")
         model(inputs.to(torch.int32), targets, get_window_size_blocks(0, train_params.n_steps)).backward()
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
-        for opt in optimizers:
-            opt.step()
+        for optimizer in optimizers:
+            optimizer.step()
+        for scheduler in schedulers:
+            scheduler.step()
         model.zero_grad(set_to_none=True)
     model.load_state_dict(initial_state["model"])
-    for opt, opt_state in zip(optimizers, initial_state["optimizers"]):
-        opt.load_state_dict(opt_state)
+    for optimizer, optimizer_state in zip(optimizers, initial_state["optimizers"]):
+        optimizer.load_state_dict(optimizer_state)
     del initial_state
 
     training_time_ms = 0
@@ -175,8 +181,11 @@ def train_stage(
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
 
-        for opt in optimizers:
-            opt.step()
+        for optimizer in optimizers:
+            optimizer.step()
+
+        for scheduler in schedulers:
+            scheduler.step(global_step, train_params.n_steps)
 
         model.zero_grad(set_to_none=True)
 
@@ -191,16 +200,24 @@ def train_stage(
         )
 
 
+def stage_0_adam_lr_lambda(global_step: int, total_stage_steps: int):
+    pass
+
+
+def stage_0_muon_lr_lambda(global_step: int, total_stage_steps: int):
+    pass
+
+
 stage_0_params = TrainerParams(
     adam_head_lr=0.22,
     adam_embed_lr=0.6,
     adam_scalar_lr=0.04,
-    adam_lr_lambda=lambda step, n_steps: 1 - (0.25 * step / n_steps),
+    adam_lr_lambda=stage_0_adam_lr_lambda,
     adam_betas=[0.8, 0.95],
     #
     muon_attn_lr=0.25,
     muon_mlp_lr=0.35,
-    muon_lr_lambda=lambda step, n_steps: 1 - (0.25 * step / n_steps),
+    muon_lr_lambda=stage_0_muon_lr_lambda,
     muon_momentum=0.95,
     muon_ns_steps=5,
     #
@@ -271,8 +288,8 @@ def main(logger: DistributedLogger):
         world_size=world_size,
     )
     optimizers = [adam_optimizer, muon_optimizer]
-    for opt in optimizers:
-        for group in opt.param_groups:
+    for optimizer in optimizers:
+        for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]
 
     # learning rate schedule: stable then decay
@@ -295,7 +312,7 @@ def main(logger: DistributedLogger):
     warmup_steps = 10
     initial_state = dict(
         model=copy.deepcopy(model.state_dict()),
-        optimizers=[copy.deepcopy(opt.state_dict()) for opt in optimizers],
+        optimizers=[copy.deepcopy(optimizer.state_dict()) for optimizer in optimizers],
     )  # save the initial state
     for _ in range(warmup_steps):
         inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
