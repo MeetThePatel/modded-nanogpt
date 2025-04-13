@@ -153,7 +153,7 @@ def train_stage(
         step_start_time = time.perf_counter()
 
         inputs, targets = next(train_loader)
-        loss = model(inputs, targets, get_window_size_blocks(step, train_params.n_steps))
+        _, loss = model(inputs, targets, get_window_size_blocks(step, train_params.n_steps))
         loss.backward()
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)

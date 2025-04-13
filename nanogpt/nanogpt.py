@@ -151,7 +151,7 @@ class NanoGPT(nn.Module):
             reduction="sum" if self.training else "mean",
         )
 
-        return loss
+        return logits, loss
 
     def hyperclone_(self, dim: int = -1):
         self.embed.hyperclone_()
