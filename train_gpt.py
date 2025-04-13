@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from torch import nn
 
-from nanogpt import Muon, NanoGPT, NanoGPTParams
+from nanogpt import Muon, NanoGPT
 from nanogpt.dataloader import distributed_data_generator
 from nanogpt.helpers import get_window_size_blocks
 from nanogpt.logging import DistributedLogger, collect_code_snapshot, log_system_info, create_parameter_count_table
@@ -17,7 +17,6 @@ from nanogpt.logging import DistributedLogger, collect_code_snapshot, log_system
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.manual_seed(69)  # nice
 torch.empty(1, device="cuda", requires_grad=True).backward()  # prevents a bug on some systems
-# torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
 
 
 RUN_NAME = "hyperclone;ALL;with-hyperclone;tuning-lr"
@@ -76,6 +75,7 @@ def train_stage(
     train_params: TrainerParams,
     data_params: DataParams,
     *,
+    global_step: int,
     rank: int,
     world_size: int,
     train_loader: Generator[tuple[torch.Tensor, torch.Tensor]],
@@ -115,6 +115,8 @@ def train_stage(
     )
     optimizers = [adam_optimizer, muon_optimizer]
 
+    model: nn.Module = torch.compile(model, dynamic=False)
+
     # Warmup
     initial_state = dict(
         model=copy.deepcopy(model.state_dict()),
@@ -153,6 +155,38 @@ def train_stage(
         tensorboard_writer.add_scalar("val_loss", val_loss.item(), step)
         logger.log(
             f"step:{step}/{train_params.n_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms",
+            print_to_console=True,
+        )
+        model.train()
+        torch.cuda.synchronize()
+
+    for step in range(train_params.n_steps + 1):
+        if (step == train_params.n_steps) or (step % train_params.validate_every == 0):
+            validate(train_params.n_steps)
+
+        if step == train_params.n_steps:
+            break
+
+        step_start_time = time.perf_counter()
+
+        inputs, targets = next(train_loader)
+        loss = model(inputs, targets, get_window_size_blocks(step, train_params.n_steps))
+        loss.backward()
+        for param in model.parameters():
+            dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+
+        for opt in optimizers:
+            opt.step()
+
+        model.zero_grad(set_to_none=True)
+
+        step_time = time.perf_counter() - step_start_time
+        training_time_ms += 1000 * step_time
+
+        tensorboard_writer.add_scalar("train_loss", loss.item(), global_step=global_step)
+        global_step += 1
+        logger.log(
+            f"step:{step + 1}/{train_params.n_steps} step_train_time:{step_time * 1000:.0f} total_train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / (step + 1):.2f}ms",
             print_to_console=True,
         )
 
@@ -217,7 +251,7 @@ def main(logger: DistributedLogger):
 
     # init the optimizer(s)
     adam_params = [
-        dict(params=head_params, lr=0.22),
+        dict(params=head_params, lr=0.32),
         dict(params=embed_params, lr=0.6),
         dict(params=scalar_params, lr=0.04),
     ]
