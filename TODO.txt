@@ -1,0 +1,11 @@
+Short Term
+==================================================
+- [ ] Convert Muon to foreach
+- [ ] Switch to DDP
+- [ ] Switch to Torch dataset and dataloader
+
+
+
+Long Term
+==================================================
+- [ ] 

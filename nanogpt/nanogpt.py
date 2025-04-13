@@ -1,4 +1,6 @@
-__all__ = ["NanoGPT"]
+__all__ = ["NanoGPT", "NanoGPTParams"]
+
+from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
@@ -9,37 +11,49 @@ from .helpers import next_multiple_of_n
 from .layers import Block, CastedLinear, Embedding
 
 
+@dataclass(kw_only=True, frozen=True)
+class NanoGPTParams:
+    vocab_size: int = 50257
+    num_layers: int
+    num_heads: int
+    head_dim: int
+    model_dim: int
+    max_seq_len: int
+
+
 class NanoGPT(nn.Module):
     def __init__(
         self,
-        vocab_size: int,
-        num_layers: int,
-        num_heads: int,
-        head_dim: int,
-        model_dim: int,
-        max_seq_len: int,
+        params: NanoGPTParams,
     ):
         super().__init__()
-        self.embed = Embedding(vocab_size, model_dim)
+        self.vocab_size = params.vocab_size
+        self.num_layers = params.num_layers
+        self.num_heads = params.num_heads
+        self.head_dim = params.head_dim
+        self.model_dim = params.model_dim
+        self.max_seq_len = params.max_seq_len
+
+        self.embed = Embedding(self.vocab_size, self.model_dim)
 
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual implementation following https://arxiv.org/abs/2410.17897
         # value embedding code simplification inspired by @ragulpr https://github.com/KellerJordan/modded-nanogpt/pull/78
-        self.value_embeds = nn.ModuleList([Embedding(vocab_size, model_dim) for _ in range(3)])
-        self.blocks = nn.ModuleList([Block(model_dim, num_heads, head_dim, max_seq_len, i) for i in range(num_layers)])
+        self.value_embeds = nn.ModuleList([Embedding(self.vocab_size, self.model_dim) for _ in range(3)])
+        self.blocks = nn.ModuleList([Block(self.model_dim, self.num_heads, self.head_dim, self.max_seq_len, i) for i in range(self.num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         self.lm_head = CastedLinear(
-            model_dim,
-            next_multiple_of_n(vocab_size, n=128),
+            self.model_dim,
+            next_multiple_of_n(self.vocab_size, n=128),
             use_fp8=True,
-            x_s=(model_dim**0.5) / 448,
+            x_s=(self.model_dim**0.5) / 448,
             w_s=24 / 448,
             grad_s=1 / 448,
         )
         self.lm_head.weight.detach().zero_()  # @Grad62304977
         # Add learnable skip connection weights for decoder layers
-        assert num_layers % 2 == 0
-        self.skip_weights = nn.Parameter(torch.ones(num_layers // 2))
+        assert self.num_layers % 2 == 0
+        self.skip_weights = nn.Parameter(torch.ones(self.num_layers // 2))
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
