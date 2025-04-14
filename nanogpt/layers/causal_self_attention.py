@@ -73,15 +73,16 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
-    def hyperclone_(self):
-        new_qkv_w = (self.qkv_w / math.sqrt(2)).repeat(1, 2, 2)
-        self.qkv_w = nn.Parameter(new_qkv_w)
+    def hyperclone_(self, type: str):
+        if type in ["full", "attn"]:
+            new_qkv_w = (self.qkv_w / math.sqrt(2)).repeat(1, 2, 2)
+            self.qkv_w = nn.Parameter(new_qkv_w)
 
-        self.rotary.hyperclone_()
-        self.c_proj.hyperclone_()
-        self.head_dim *= 2
-        self.hdim *= 2
-        self.dim *= 2
+            self.rotary.hyperclone_()
+            self.c_proj.hyperclone_()
+            self.head_dim *= 2
+            self.hdim *= 2
+            self.dim *= 2
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:

@@ -21,7 +21,7 @@ class Embedding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.embedding(x, self.weight)
 
-    def hyperclone_(self, type: str = "full"):
+    def hyperclone_(self, type: str):
         """Apply HyperCloning methodology to embedding tensor.
 
         Call this function on the phase transition.
@@ -30,7 +30,7 @@ class Embedding(nn.Module):
         to (vocab_size, 2 * model_dim), by applying the symmetric method described in
         Section 3.4 of https://arxiv.org/abs/2409.12903
         """
-        if type in ['full', 'attn']:
+        if type in ["full", "attn"]:
             scaled = self.weight / 2
             self.weight = nn.Parameter(scaled.repeat(1, 2))
             self.current_dim *= 2

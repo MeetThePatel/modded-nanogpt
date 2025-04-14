@@ -153,13 +153,20 @@ class NanoGPT(nn.Module):
 
         return logits, loss
 
-    def hyperclone_(self, dim: int = -1):
-        self.embed.hyperclone_()
+    def hyperclone_(self, type: str = "full"):
+        assert type in ["full", "attn", "mlp"], f"Hyperclone type must be either 'full', 'attn', or 'mlp'. Recieved {type}"
+
+        self.embed.hyperclone_(type)
         for ve in self.value_embeds:
-            ve.hyperclone_()
+            ve: Embedding
+            ve.hyperclone_(type)
+
         for block in self.blocks:
-            block.hyperclone_(dim)
-        self.lm_head.weight = nn.Parameter((self.lm_head.weight / 2).repeat(1, 2))
+            block: Block
+            block.hyperclone_(type)
+
+        if type in ["full", "attn"]:
+            self.lm_head.weight = nn.Parameter((self.lm_head.weight / 2).repeat(1, 2))
 
     @staticmethod
     def norm(x: Tensor) -> Tensor:

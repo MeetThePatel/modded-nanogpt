@@ -26,7 +26,7 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
-    def hyperclone_(self, type: str = "full"):
+    def hyperclone_(self, type: str):
         if type == "full":
             self.c_fc.hyperclone_()
             self.c_proj.hyperclone_()
