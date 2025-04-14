@@ -1,6 +1,20 @@
-from pathlib import Path
-import torch
+__all__ = ["DataParams", "_load_data_shard", "distributed_data_generator"]
+
 import glob
+from dataclasses import dataclass
+from pathlib import Path
+
+import torch
+
+
+@dataclass(kw_only=True, frozen=True)
+class DataParams:
+    train_files: str = "data/fineweb10B/fineweb_train_*.bin"
+    train_seq_len: int = 64 * 1024
+
+    val_files: str = "data/fineweb10B/fineweb_val_*.bin"
+    val_seq_len: int = 64 * 1024
+    val_tokens: int = 10485760
 
 
 def _load_data_shard(file: Path):

@@ -42,6 +42,10 @@ class NanoGPT(nn.Module):
         self.blocks = nn.ModuleList([Block(self.model_dim, self.num_heads, self.head_dim, self.max_seq_len, i) for i in range(self.num_layers)])
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
+
+        self.input_norm = nn.RMSNorm(self.model_dim)
+        self.output_norm = nn.RMSNorm(self.model_dim)
+
         self.lm_head = CastedLinear(
             self.model_dim,
             next_multiple_of_n(self.vocab_size, n=128),
@@ -125,7 +129,7 @@ class NanoGPT(nn.Module):
         ]
         assert len(block_masks) == len(self.blocks)
 
-        x = x0 = NanoGPT.norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
+        x = x0 = self.input_norm(self.embed(input_seq)[None])  # use of norm here by @Grad62304977
 
         # U-net design by @brendanh0gan
         skip_connections = []
@@ -139,7 +143,7 @@ class NanoGPT(nn.Module):
             if i < n:
                 skip_connections.append(x)
 
-        x = NanoGPT.norm(x)
+        x = self.output_norm(x)
 
         logits = self.lm_head(x).float()
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
@@ -168,6 +172,12 @@ class NanoGPT(nn.Module):
         if type in ["full", "attn"]:
             self.lm_head.weight = nn.Parameter((self.lm_head.weight / 2).repeat(1, 2))
 
-    @staticmethod
-    def norm(x: Tensor) -> Tensor:
-        return F.rms_norm(x, (x.size(-1),))
+        new_input_norm = nn.RMSNorm(self.model_dim * 2)
+        new_input_norm.weight.data = self.input_norm.weight.repeat(2)
+        self.input_norm = new_input_norm
+
+        new_output_norm = nn.RMSNorm(self.model_dim * 2)
+        new_output_norm.weight.data = self.output_norm.weight.repeat(2)
+        self.output_norm = new_output_norm
+
+        self.model_dim *= 2

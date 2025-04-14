@@ -2,7 +2,6 @@ __all__ = ["Block"]
 
 import torch
 from torch import Tensor, nn
-from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 
 from .causal_self_attention import CausalSelfAttention
@@ -19,9 +18,13 @@ class Block(nn.Module):
         layer_idx: int,
     ):
         super().__init__()
+        self.dim = dim
+
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
         self.attn = CausalSelfAttention(dim, num_heads, max_seq_len, head_dim) if layer_idx != 7 else None
+        self.attn_norm = nn.RMSNorm(dim) if layer_idx != 7 else None
         self.mlp = MLP(dim)
+        self.mlp_norm = nn.RMSNorm(dim)
         self.lambdas = nn.Parameter(torch.tensor([1.0, 0.0]))
 
     def forward(
@@ -34,11 +37,11 @@ class Block(nn.Module):
         x = self.lambdas[0] * x + self.lambdas[1] * x0
 
         if self.attn is not None:
-            attn_normed = Block.norm(x)
+            attn_normed = self.attn_norm(x)
             attn_resid = self.attn(attn_normed, ve, block_mask)
             x = x + attn_resid
 
-        mlp_normed = Block.norm(x)
+        mlp_normed = self.mlp_norm(x)
         mlp_resid = self.mlp(mlp_normed)
         x = x + mlp_resid
         return x
@@ -46,8 +49,14 @@ class Block(nn.Module):
     def hyperclone_(self, type: str):
         if self.attn is not None:
             self.attn.hyperclone_(type)
-        self.mlp.hyperclone_(type)
 
-    @staticmethod
-    def norm(x: Tensor) -> Tensor:
-        return F.rms_norm(x, (x.size(-1),))
+            new_attn_norm = nn.RMSNorm(self.dim * 2)
+            new_attn_norm.weight.data = self.attn_norm.weight.repeat(2)
+            self.attn_norm = new_attn_norm
+
+        self.mlp.hyperclone_(type)
+        new_mlp_norm = nn.RMSNorm(self.dim * 2)
+        new_mlp_norm.weight.data = self.mlp_norm.weight.repeat(2)
+        self.mlp_norm = new_mlp_norm
+
+        self.dim *= 2

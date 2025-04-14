@@ -24,6 +24,9 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
 
+        self.q_norm = nn.RMSNorm(self.head_dim)
+        self.k_norm = nn.RMSNorm(self.head_dim)
+
         self.dim = dim
         self.hdim = num_heads * head_dim
 
@@ -49,7 +52,7 @@ class CausalSelfAttention(nn.Module):
 
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
 
-        q, k = CausalSelfAttention.norm(q), CausalSelfAttention.norm(k)  # QK norm @Grad62304977
+        q, k = self.q_norm(q), self.k_norm(k)  # QK norm @Grad62304977
 
         q, k = self.rotary(q), self.rotary(k)
 
@@ -75,15 +78,20 @@ class CausalSelfAttention(nn.Module):
 
     def hyperclone_(self, type: str):
         if type in ["full", "attn"]:
-            new_qkv_w = (self.qkv_w / math.sqrt(2)).repeat(1, 2, 2)
+            new_qkv_w = (self.qkv_w).repeat(1, 2, 2)
+            new_qkv_w[0].mul_(1 / math.sqrt(2))
             self.qkv_w = nn.Parameter(new_qkv_w)
+
+            new_k_norm = nn.RMSNorm(self.head_dim * 2)
+            new_k_norm.weight.data = self.k_norm.weight.repeat(2)
+            self.k_norm = new_k_norm
+
+            new_q_norm = nn.RMSNorm(self.head_dim * 2)
+            new_q_norm.weight.data = self.q_norm.weight.repeat(2)
+            self.q_norm = new_q_norm
 
             self.rotary.hyperclone_()
             self.c_proj.hyperclone_()
             self.head_dim *= 2
             self.hdim *= 2
             self.dim *= 2
-
-    @staticmethod
-    def norm(x: Tensor) -> Tensor:
-        return F.rms_norm(x, (x.size(-1),))
