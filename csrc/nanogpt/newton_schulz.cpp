@@ -1,4 +1,3 @@
-#include <cute/layout.hpp>
 #include <torch/extension.h>
 
 extern void

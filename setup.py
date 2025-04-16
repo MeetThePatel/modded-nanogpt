@@ -20,6 +20,8 @@ setup(
             sources=[
                 "csrc/nanogpt/newton_schulz.cpp",
                 "csrc/nanogpt/newton_schulz.cu",
+                # "csrc/nanogpt/muon.cpp",
+                # "csrc/nanogpt/muon.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],

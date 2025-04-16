@@ -3,3 +3,6 @@ pylog124M/
 __pycache__/
 logs/
 .mypy_cache/
+build
+*.egg-info
+dist
