@@ -12,14 +12,15 @@ if os.path.isdir(".git"):
 
 
 setup(
-    name="nanogpt",
+    name="nanogpt_kernels",
     packages=find_packages(exclude=("csrc", "data", "img", "records", "logs")),
     ext_modules=[
         CUDAExtension(
-            name="nanogpt_cuda",
+            name="nanogpt_kernels",
             sources=[
                 "csrc/nanogpt/newton_schulz.cpp",
-                "csrc/nanogpt/newton_schulz.cu",
+                "csrc/nanogpt/newton_schulz_kernel.cu",
+                "csrc/nanogpt/normalize.cu",
                 # "csrc/nanogpt/muon.cpp",
                 # "csrc/nanogpt/muon.cu",
             ],
@@ -28,6 +29,7 @@ setup(
                 "nvcc": [
                     "-O3",
                     "-std=c++17",
+                    "--extended-lambda"
                 ],
             },
             include_dirs=[
@@ -37,4 +39,10 @@ setup(
         )
     ],
     cmdclass={"build_ext": BuildExtension},
+    install_requires=[
+        "torch",
+    ],
+    setup_requires=[
+        "ninja",
+    ]
 )
