@@ -26,11 +26,7 @@ setup(
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
-                "nvcc": [
-                    "-O3",
-                    "-std=c++17",
-                    "--extended-lambda"
-                ],
+                "nvcc": ["-O3", "-std=c++17", "--extended-lambda"],
             },
             include_dirs=[
                 Path(this_dir) / "csrc" / "nanogpt",
@@ -44,5 +40,5 @@ setup(
     ],
     setup_requires=[
         "ninja",
-    ]
+    ],
 )
