@@ -130,8 +130,7 @@ DECLARE_LAUNCHERS(c10::Half)
 
 // Newton Schulz ---------------------------------------------------------------
 
-torch::Tensor newton_schulz_cuda(const torch::Tensor &G,
-                                 const int ns_steps = 5) {
+torch::Tensor newton_schulz(const torch::Tensor &G, const int ns_steps = 5) {
   TORCH_CHECK(G.is_cuda(), "Input tensor G must be a CUDA tensor.");
   TORCH_CHECK(G.dim() == 2, "Input tensor G must be 2 dimensional.")
 
@@ -155,10 +154,7 @@ torch::Tensor newton_schulz_cuda(const torch::Tensor &G,
   const int K = X_current.size(0);
   const int L = X_current.size(1);
 
-  AT_DISPATCH_FLOATING_TYPES_AND2(
-      at::ScalarType::Half, at::ScalarType::BFloat16,
-      options.dtype().toScalarType(), "normalize_inplace",
-      [&] { normalize_<scalar_t>(X_current.data_ptr<scalar_t>(), K, L); });
+  normalize_(X_current);
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 

@@ -2,6 +2,18 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <torch/extension.h>
+
+#define CUDA_CHECK(call)                                                       \
+  do {                                                                         \
+    cudaError_t err = call;                                                    \
+    if (err != cudaSuccess) {                                                  \
+      fprintf(stderr, "CUDA Error in %s at %s:%d - %s\n", #call, __FILE__,     \
+              __LINE__, cudaGetErrorString(err));                              \
+      /* Consider throwing an exception instead of exiting in library code */  \
+      throw std::runtime_error(cudaGetErrorString(err));                       \
+    }                                                                          \
+  } while (0)
 
 // Accumulation Type
 template <typename scalar_t>
@@ -9,10 +21,16 @@ struct AccumType {
   using type = float;
 };
 
-template <>
-struct AccumType<double> {
-  using type = double;
-};
+#define DECLARE_ACCUM_TYPE(scalar_type, accum_type)                            \
+  template <>                                                                  \
+  struct AccumType<scalar_type> {                                              \
+    using type = accum_type;                                                   \
+  }
+
+DECLARE_ACCUM_TYPE(double, double);
+DECLARE_ACCUM_TYPE(float, float);
+DECLARE_ACCUM_TYPE(c10::BFloat16, float);
+DECLARE_ACCUM_TYPE(c10::Half, float);
 
 // Epsilon
 template <typename scalar_t>
@@ -143,14 +161,15 @@ void normalize_(scalar_t *__restrict__ X, // (M, N)
   using accum_t = typename AccumType<scalar_t>::type;
 
   int device;
-  cudaGetDevice(&device);
+  CUDA_CHECK(cudaGetDevice(&device));
 
   int sm_count;
-  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
+  CUDA_CHECK(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount,
+                                    device));
 
   // Compute sum of squares ----------------------------------------------------
 
-  const int BLOCK_SIZE_1 = 256; // TODO: Tune this.
+  const int BLOCK_SIZE_1 = 1024; // TODO: Tune this.
 
   int target_blocks_1 = sm_count * 32;
   int grid_size_1 = std::min(
@@ -159,10 +178,10 @@ void normalize_(scalar_t *__restrict__ X, // (M, N)
 
   accum_t *partial_sums = nullptr;
   accum_t *final_sum = nullptr;
-  cudaMalloc(&partial_sums, grid_size_1 * sizeof(accum_t));
-  cudaMalloc(&final_sum, sizeof(accum_t));
+  CUDA_CHECK(cudaMalloc(&partial_sums, grid_size_1 * sizeof(accum_t)));
+  CUDA_CHECK(cudaMalloc(&final_sum, sizeof(accum_t)));
 
-  cudaMemset(final_sum, 0, sizeof(accum_t));
+  CUDA_CHECK(cudaMemset(final_sum, 0, sizeof(accum_t)));
 
   sum_of_squares_kernel<scalar_t, accum_t, BLOCK_SIZE_1>
       <<<grid_size_1, BLOCK_SIZE_1>>>(X, total_numel, partial_sums);
@@ -191,8 +210,8 @@ void normalize_(scalar_t *__restrict__ X, // (M, N)
   scale_kernel<scalar_t, accum_t, BLOCK_SIZE_3>
       <<<grid_size_3, BLOCK_SIZE_3>>>(X, total_numel, final_sum);
 
-  cudaFree(partial_sums);
-  cudaFree(final_sum);
+  CUDA_CHECK(cudaFree(partial_sums));
+  CUDA_CHECK(cudaFree(final_sum));
 }
 
 #define DECLARE_NORMALIZE(type)                                                \
@@ -201,3 +220,20 @@ DECLARE_NORMALIZE(double)
 DECLARE_NORMALIZE(float)
 DECLARE_NORMALIZE(c10::BFloat16)
 DECLARE_NORMALIZE(c10::Half)
+
+void normalize_(torch::Tensor &X) {
+  TORCH_CHECK(X.is_cuda(), "Input tensor X must be on device.")
+  TORCH_CHECK(X.dim() == 2, "Input tensor X must be 2dim.")
+  TORCH_CHECK(X.is_contiguous(), "Input tensor X must be contiguous.")
+
+  const int M = X.size(0);
+  const int N = X.size(1);
+  TORCH_CHECK(M > 0, "Input dim M must be positive.")
+  TORCH_CHECK(N > 0, "Input dim N must be positive.")
+
+  auto options = X.options();
+
+  AT_DISPATCH_FLOATING_TYPES_AND(
+      at::ScalarType::BFloat16, options.dtype().toScalarType(), "normalize",
+      [&] { normalize_<scalar_t>(X.data_ptr<scalar_t>(), M, N); });
+}

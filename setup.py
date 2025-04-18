@@ -18,11 +18,9 @@ setup(
         CUDAExtension(
             name="nanogpt_kernels",
             sources=[
-                "csrc/nanogpt/newton_schulz.cpp",
+                "csrc/nanogpt/nanogpt.cpp",
                 "csrc/nanogpt/newton_schulz_kernel.cu",
-                "csrc/nanogpt/normalize.cu",
-                # "csrc/nanogpt/muon.cpp",
-                # "csrc/nanogpt/muon.cu",
+                "csrc/nanogpt/normalize_kernel.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
