@@ -1,239 +1,83 @@
 #include <c10/core/ScalarType.h>
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
-#define CUDA_CHECK(call)                                                       \
-  do {                                                                         \
-    cudaError_t err = call;                                                    \
-    if (err != cudaSuccess) {                                                  \
-      fprintf(stderr, "CUDA Error in %s at %s:%d - %s\n", #call, __FILE__,     \
-              __LINE__, cudaGetErrorString(err));                              \
-      /* Consider throwing an exception instead of exiting in library code */  \
-      throw std::runtime_error(cudaGetErrorString(err));                       \
-    }                                                                          \
-  } while (0)
+#include <cute/tensor.hpp>
+using cute::Layout, cute::Shape, cute::Stride, cute::Int;
 
-// Accumulation Type
-template <typename scalar_t>
-struct AccumType {
-  using type = float;
-};
+template <typename scalar_t, int BLOCKSIZE_X, int BLOCKSIZE_Y>
+__global__ void l2_normalize_rowmajor_kernel(cute::Tensor<scalar_t const *, Layout<Shape<int, int>, Stride<int, Int<1>>>> g_input,
+                                             cute::Tensor<scalar_t *, Layout<Shape<int, int>, Stride<int, Int<1>>>> g_output,
+                                             float *g_total_sum_of_squares, float epsilon) {
 
-#define DECLARE_ACCUM_TYPE(scalar_type, accum_type)                            \
-  template <>                                                                  \
-  struct AccumType<scalar_type> {                                              \
-    using type = accum_type;                                                   \
-  }
+  using namespace cute;
 
-DECLARE_ACCUM_TYPE(double, double);
-DECLARE_ACCUM_TYPE(float, float);
-DECLARE_ACCUM_TYPE(c10::BFloat16, float);
-DECLARE_ACCUM_TYPE(c10::Half, float);
+  using accum_t = float;
+  using BlockShape = Shape<_<BLOCKSIZE_Y>, _<BLOCKSIZE_X>>;
 
-// Epsilon
-template <typename scalar_t>
-struct Epsilon;
+  using SMemLayout = Layout<BlockShape, Stride<Int<BLOCKSIZE_X + 1>, cute::_1>>;
 
-template <>
-struct Epsilon<double> {
-  static constexpr double value = 1e-8;
-};
+  extern __shared__ char smem_buffer[];
+  Tensor s_input = make_tensor(make_smem_ptr(reinterpret_cast<scalar_t *>(smem_buffer)), SMemLayout{});
 
-template <>
-struct Epsilon<float> {
-  static constexpr float value = 1e-8f;
-};
+  int block_idx_x = blockIdx.x;
+  int block_idx_y = blockIdx.y;
+  int thread_idx_x = threadIdx.x;
+  int thread_idx_y = threadIdx.y;
 
-template <typename accum_t>
-__device__ inline accum_t warpReduceSum(accum_t val) {
-  static_assert(std::is_same_v<accum_t, float> ||
-                    std::is_same_v<accum_t, double>,
-                "warpReduceSum accum_t must be either float or double.");
-#pragma unroll
-  for (int offset = 16; offset > 0; offset /= 2) {
-    val += __shfl_down_sync(0xffffffff, val, offset);
-  }
-  return val;
-}
+  int tid = thread_idx_y * blockDim.x + thread_idx_x;
+  int block_dim = blockDim.x * blockDim.y;
 
-template <typename scalar_t, typename accum_t, int BLOCK_SIZE>
-__global__ void sum_of_squares_kernel(const scalar_t *__restrict__ X,
-                                      const size_t total_numel,
-                                      accum_t *__restrict__ partial_sums) {
-  __shared__ accum_t sData[BLOCK_SIZE / 32];
+  Layout thread_layout_in_block = local_tile(BlockShape{}, Layout<Shape<Int<BLOCKSIZE_Y>, Int<BLOCKSIZE_X>>>{}, _1{}, tid);
+  Tensor thread_local_input = local_partition(s_input, thread_layout_in_block, tid);
 
-  accum_t thread_sum = static_cast<accum_t>(0.0);
-  for (auto idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total_numel;
-       idx += gridDim.x * blockDim.x) {
-    accum_t val = static_cast<accum_t>(X[idx]);
-    thread_sum += val * val;
-  }
+  Tensor g_input_block = logical_divide(g_input, BlockShape{}, Block{block_idx_y, block_idx_x});
+  Tensor g_output_block = logical_divide(g_output, BlockShape{}, Block{block_idx_y, block_idx_x});
 
-  accum_t warp_sum = warpReduceSum(thread_sum);
+  // Copy Global -> Shared -------------------------------------------------------------------------
+  using GMemLayoutAtom = Layout<Shape<_8, _16>>;
+  using GMemCopyAtom = Copy_Atom<UniversalCopy<uint128_t>, scalar_t>;
+  auto tiled_copy_G2S = make_tiled_copy(GMemCopyAtom{}, Layout<Shape<Int<BLOCKSIZE_Y>, Int<BLOCKSIZE_X>>>{}, select<0, 1>(thread_layout_in_block));
 
-  if ((threadIdx.x) % 32 == 0) {
-    sData[threadIdx.x / 32] = warp_sum;
-  }
-
+  copy(tiled_copy_G2S, g_input_block, s_input);
   __syncthreads();
 
-  accum_t block_sum = static_cast<accum_t>(0.0);
-  if (threadIdx.x < (blockDim.x / 32)) {
-    block_sum = sData[threadIdx.x];
-  }
-  if (threadIdx.x < 32) {
-    block_sum = warpReduceSum(block_sum);
-  }
-  if (threadIdx.x == 0) {
-    partial_sums[blockIdx.x] = block_sum;
-  }
-}
-
-template <typename accum_t, int BLOCK_SIZE>
-__global__ void reduce_partials_kernel(const accum_t *__restrict__ partial_sums,
-                                       const int num_partials,
-                                       accum_t *__restrict__ final_sum) {
-  __shared__ accum_t sData[BLOCK_SIZE];
-
-  accum_t thread_sum = static_cast<accum_t>(0.0);
-  for (auto idx = blockIdx.x * blockDim.x + threadIdx.x; idx < num_partials;
-       idx += gridDim.x * blockDim.x) {
-    thread_sum += partial_sums[idx];
+  // Calculate Partial Sums (intrablock) -----------------------------------------------------------
+  accum_t thread_sum_of_square = static_cast<accum_t>(0);
+  for (auto i = 0; i < size(thread_local_input); ++i) {
+    accum_t val = static_cast<accum_t>(thread_local_input(i));
+    thread_sum_of_square += val * val;
   }
 
-  sData[threadIdx.x] = thread_sum;
+  // Blockwide reduction ---------------------------------------------------------------------------
+  __shared__ accum_t s_partial_sums[BLOCKSIZE_X * BLOCKSIZE_Y];
+  s_partial_sums[tid] = thread_sum_of_square;
   __syncthreads();
 
-#pragma unroll
-  for (auto offset = blockDim.x / 2; offset > 0; offset >>= 1) {
-    if (threadIdx.x < offset) {
-      sData[threadIdx.x] += sData[threadIdx.x + offset];
+  for (auto offset = block_dim / 2; offset > 0; offset /= 2) {
+    if (tid < offset) {
+      s_partial_sums[tid] += s_partial_sums[tid + offset];
     }
     __syncthreads();
   }
 
-  if (threadIdx.x == 0) {
-    if (sData[0] != static_cast<accum_t>(0.0)) {
-      atomicAdd(final_sum, sData[0]);
-    }
-  }
-}
-
-template <typename scalar_t, typename accum_t, int BLOCK_SIZE>
-__global__ void scale_kernel(scalar_t *__restrict__ X, const size_t total_numel,
-                             const accum_t *__restrict__ final_sum) {
-  __shared__ accum_t inv_sqrt_sum_SHARED;
-
-  if (threadIdx.x == 0) {
-    accum_t total_sum = final_sum[0];
-    accum_t sum_plus_eps = total_sum + Epsilon<accum_t>::value;
-    accum_t inv_sqrt_sum_val;
-
-    if constexpr (std::is_same_v<accum_t, float>) {
-      inv_sqrt_sum_val = (sum_plus_eps <= 0.0f) ? 0.0f : rsqrt(sum_plus_eps);
-    } else {
-      inv_sqrt_sum_val = (sum_plus_eps <= 0.0) ? 0.0 : rsqrt(sum_plus_eps);
-    }
-    inv_sqrt_sum_SHARED = inv_sqrt_sum_val;
+  if (tid == 0) {
+    atomicAdd(g_total_sum_of_squares, s_partial_sums[0]);
   }
   __syncthreads();
 
-  accum_t inv_sqrt_sum = inv_sqrt_sum_SHARED;
-
-  for (auto idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total_numel;
-       idx += gridDim.x * blockDim.x) {
-    accum_t val = static_cast<accum_t>(X[idx]);
-    val *= inv_sqrt_sum;
-    X[idx] = static_cast<accum_t>(val);
+  // Calculate normalization factor ----------------------------------------------------------------
+  __shared__ accum_t s_inv_norm;
+  if (tid == 0) {
+    accum_t total_sum_of_squares = *g_total_sum_of_squares;
+    s_inv_norm = rsqrtf(total_sum_of_squares + epsilon);
   }
-}
+  __syncthreads();
 
-template <typename scalar_t>
-void normalize_(scalar_t *__restrict__ X, // (M, N)
-                const int M, const int N) {
-
-  if (M <= 0 || N <= 0)
-    return;
-
-  const size_t total_numel = static_cast<size_t>(M) * N;
-  using accum_t = typename AccumType<scalar_t>::type;
-
-  int device;
-  CUDA_CHECK(cudaGetDevice(&device));
-
-  int sm_count;
-  CUDA_CHECK(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount,
-                                    device));
-
-  // Compute sum of squares ----------------------------------------------------
-
-  const int BLOCK_SIZE_1 = 1024; // TODO: Tune this.
-
-  int target_blocks_1 = sm_count * 32;
-  int grid_size_1 = std::min(
-      target_blocks_1, (int)((total_numel + BLOCK_SIZE_1 - 1) / BLOCK_SIZE_1));
-  grid_size_1 = std::max(1, grid_size_1);
-
-  accum_t *partial_sums = nullptr;
-  accum_t *final_sum = nullptr;
-  CUDA_CHECK(cudaMalloc(&partial_sums, grid_size_1 * sizeof(accum_t)));
-  CUDA_CHECK(cudaMalloc(&final_sum, sizeof(accum_t)));
-
-  CUDA_CHECK(cudaMemset(final_sum, 0, sizeof(accum_t)));
-
-  sum_of_squares_kernel<scalar_t, accum_t, BLOCK_SIZE_1>
-      <<<grid_size_1, BLOCK_SIZE_1>>>(X, total_numel, partial_sums);
-
-  // Reduce partial sums. ------------------------------------------------------
-
-  const int BLOCK_SIZE_2 = 256; // TODO: Tune this.
-
-  int target_blocks_2 = sm_count * 32;
-  int grid_size_2 = std::min(
-      target_blocks_2, (int)((total_numel + BLOCK_SIZE_2 - 1) / BLOCK_SIZE_2));
-  grid_size_2 = std::max(1, grid_size_2);
-
-  if (grid_size_2 > 0) {
-    reduce_partials_kernel<accum_t, BLOCK_SIZE_2>
-        <<<grid_size_2, BLOCK_SIZE_2>>>(partial_sums, grid_size_1, final_sum);
+  // Apply normalization factor --------------------------------------------------------------------
+  Tensor thread_local_output = local_partition(x_output_block, thread_layout_in_block, tid);
+  for (auto i = 0; i < size(thread_local_input); ++i) {
+    thread_local_output(i) = static_cast<scalar_t>(static_cast<accum_t>(thread_local_input(i)) * s_inv_norm);
   }
-
-  // Scale element-wise. -------------------------------------------------------
-  const int BLOCK_SIZE_3 = 256; // TODO: Tune this.
-  int target_blocks_3 = sm_count * 32;
-  int grid_size_3 = std::min(
-      target_blocks_3, (int)((total_numel + BLOCK_SIZE_3 - 1) / BLOCK_SIZE_3));
-  grid_size_3 = std::max(1, grid_size_3);
-
-  scale_kernel<scalar_t, accum_t, BLOCK_SIZE_3>
-      <<<grid_size_3, BLOCK_SIZE_3>>>(X, total_numel, final_sum);
-
-  CUDA_CHECK(cudaFree(partial_sums));
-  CUDA_CHECK(cudaFree(final_sum));
-}
-
-#define DECLARE_NORMALIZE(type)                                                \
-  template void normalize_<type>(type *__restrict__, int, int);
-DECLARE_NORMALIZE(double)
-DECLARE_NORMALIZE(float)
-DECLARE_NORMALIZE(c10::BFloat16)
-DECLARE_NORMALIZE(c10::Half)
-
-void normalize_(torch::Tensor &X) {
-  TORCH_CHECK(X.is_cuda(), "Input tensor X must be on device.")
-  TORCH_CHECK(X.dim() == 2, "Input tensor X must be 2dim.")
-  TORCH_CHECK(X.is_contiguous(), "Input tensor X must be contiguous.")
-
-  const int M = X.size(0);
-  const int N = X.size(1);
-  TORCH_CHECK(M > 0, "Input dim M must be positive.")
-  TORCH_CHECK(N > 0, "Input dim N must be positive.")
-
-  auto options = X.options();
-
-  AT_DISPATCH_FLOATING_TYPES_AND(
-      at::ScalarType::BFloat16, options.dtype().toScalarType(), "normalize",
-      [&] { normalize_<scalar_t>(X.data_ptr<scalar_t>(), M, N); });
 }
