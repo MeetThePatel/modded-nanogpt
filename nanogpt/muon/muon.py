@@ -2,10 +2,16 @@ __all__ = ["Muon"]
 
 from typing import Any, Dict, List, Optional, Union, cast
 import torch
+from torch.nn import functional as F
 from torch import Tensor
 from torch.optim.optimizer import ParamsT, _use_grad_for_differentiable, Optimizer
 
 from .newton_schulz import newton_schulz
+
+
+@torch.compile
+def norm(x: Tensor) -> Tensor:
+    F.normalize(x, dim=(0, 1))
 
 
 class Muon(torch.optim.Optimizer):

@@ -1,4 +1,10 @@
+import lovely_tensors as lt
+
+lt.monkey_patch()
+
+
 import torch
+from torch.nn import functional as F
 import torch.utils.benchmark as benchmark
 
 from nanogpt_kernels import newton_schulz
@@ -9,11 +15,13 @@ torch._dynamo.config.cache_size_limit = 64
 
 def test_my_kernel(shape, dtype):
     G = torch.randn(shape, device="cuda", dtype=dtype)
+    G = F.normalize(G, dim=(0, 1), p=2)
     newton_schulz(G, 5)
 
 
 def test_torch_compile(shape, dtype):
     G = torch.randn(shape, device="cuda", dtype=dtype)
+    G = F.normalize(G, dim=(0, 1), p=2)
     reference_newton_schulz(G, 5)
 
 
@@ -22,8 +30,6 @@ if __name__ == "__main__":
     # for shape in [(128, 256), (512, 512), (1024, 2048), (2048, 1024)]:
     for dtype in [torch.float32, torch.half, torch.bfloat16]:
         for shape in [(1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048)]:
-            G = torch.randn(shape, device="cuda", dtype=dtype)
-
             time_my_kernel = (
                 benchmark.Timer(
                     stmt="test_my_kernel(shape, dtype)",
@@ -54,15 +60,28 @@ if __name__ == "__main__":
 
             print("\n")
 
-    # condition number
-    for dtype in [torch.float32, torch.half, torch.bfloat16]:
-        for shape in [(1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048)]:
-            G = torch.randn(shape, device="cuda", dtype=dtype)
-            X: torch.Tensor = newton_schulz(G, 5).to(torch.float32)
-            reference_X = reference_newton_schulz(G, 5).to(torch.float32)
-            G = G.to(torch.float32)
+    # # condition number
+    # for dtype in [torch.float32, torch.half, torch.bfloat16]:
+    #     for shape in [(1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048)]:
+    #         G = torch.randn(shape, device="cuda", dtype=dtype)
+    #         X: torch.Tensor = newton_schulz(G, 5).to(torch.float32)
+    #         reference_X = reference_newton_schulz(G, 5).to(torch.float32)
+    #         G = G.to(torch.float32)
 
-            print(f"Shape: {shape} \t dtype: {dtype}")
-            print(f"G: cond = {torch.linalg.cond(G): 0.3f}")
-            print(f"X: cond = {torch.linalg.cond(X): 0.3f}")
-            print(f"X_reference: cond = {torch.linalg.cond(reference_X): 0.3f}")
+    #         print(f"Shape: {shape} \t dtype: {dtype}")
+    #         print(f"G: cond = {torch.linalg.cond(G): 0.3f}")
+    #         print(f"X: cond = {torch.linalg.cond(X): 0.3f}")
+    #         print(f"X_reference: cond = {torch.linalg.cond(reference_X): 0.3f}")
+
+    # G = torch.randn((1024, 1024), dtype=torch.bfloat16, device="cuda")
+    # G = F.normalize(G, p=2, dim=(0, 1))
+
+    # reference_result = reference_newton_schulz(G, 5)
+    # my_result = newton_schulz(G, 5)
+
+    # print(f"reference: {reference_result}")
+    # print(f"my: {my_result}")
+
+    # print(f"diff: {(reference_result - my_result).max().item()}")
+
+    # torch.testing.assert_close(my_result, reference_result)

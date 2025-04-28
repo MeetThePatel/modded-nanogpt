@@ -19,8 +19,7 @@ setup(
             name="nanogpt_kernels",
             sources=[
                 "csrc/nanogpt/nanogpt.cpp",
-                # "csrc/nanogpt/newton_schulz_kernel.cu",
-                "csrc/nanogpt/normalize_kernel.cu",
+                "csrc/nanogpt/newton_schulz_kernel.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],

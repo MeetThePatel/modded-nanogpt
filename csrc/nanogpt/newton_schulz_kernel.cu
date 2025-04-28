@@ -8,8 +8,6 @@
 #include <torch/extension.h>
 #include <torch/types.h>
 
-#include "normalize.cuh"
-
 constexpr double NS_A_CONST = 3.4445;
 constexpr double NS_B_CONST = -4.7750;
 constexpr double NS_C_CONST = 2.0315;
@@ -141,8 +139,6 @@ torch::Tensor newton_schulz(const torch::Tensor &G, const int ns_steps = 5) {
 
   const int K = X_current.size(0);
   const int L = X_current.size(1);
-
-  normalize_(X_current);
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
