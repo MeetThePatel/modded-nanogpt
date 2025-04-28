@@ -20,7 +20,7 @@ template <typename scalar_t>
 __global__ void update_B_kernel(const scalar_t *__restrict__ A_in,   // (K, K)
                                 const scalar_t *__restrict__ A_2_in, // (K, K)
                                 scalar_t *__restrict__ B_out,        // (K, K)
-                                const int K, // K = min(M, N)
+                                const int K,                         // K = min(M, N)
                                 const scalar_t ns_B, const scalar_t ns_C) {
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
   const int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -39,8 +39,8 @@ template <typename scalar_t>
 __global__ void update_X_kernel(const scalar_t *__restrict__ X_in,   // (K, L)
                                 const scalar_t *__restrict__ B_X_in, // (K, L)
                                 scalar_t *__restrict__ X_out,        // (K, L)
-                                const int K, // K = min(M, N)
-                                const int L, // L = max(M, N)
+                                const int K,                         // K = min(M, N)
+                                const int L,                         // L = max(M, N)
                                 const scalar_t ns_A) {
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
   const int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -70,17 +70,13 @@ void update_B_launcher(const scalar_t *__restrict__ A_ptr,   // (K, K)
   const scalar_t ns_C = static_cast<scalar_t>(NS_C_CONST);
 
   dim3 blockDim(16, 16);
-  dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
-               (K + blockDim.y - 1) / blockDim.y);
+  dim3 gridDim((K + blockDim.x - 1) / blockDim.x, (K + blockDim.y - 1) / blockDim.y);
 
-  update_B_kernel<scalar_t>
-      <<<gridDim, blockDim, 0, stream>>>(A_ptr, A_2_ptr, B_ptr, K, ns_B, ns_C);
+  update_B_kernel<scalar_t><<<gridDim, blockDim, 0, stream>>>(A_ptr, A_2_ptr, B_ptr, K, ns_B, ns_C);
 
   cudaError_t launch_err = cudaGetLastError();
   if (launch_err != cudaSuccess) {
-    throw std::runtime_error(
-        std::string("CUDA kernel launch error (update_B_kernel): ") +
-        cudaGetErrorString(launch_err));
+    throw std::runtime_error(std::string("CUDA kernel launch error (update_B_kernel): ") + cudaGetErrorString(launch_err));
   }
 }
 
@@ -97,30 +93,22 @@ void update_X_launcher(const scalar_t *X_in_ptr, // (K, L)
   const scalar_t ns_A = static_cast<scalar_t>(NS_A_CONST);
 
   dim3 blockDim(16, 16);
-  dim3 gridDim((L + blockDim.x - 1) / blockDim.x,
-               (K + blockDim.y - 1) / blockDim.y);
+  dim3 gridDim((L + blockDim.x - 1) / blockDim.x, (K + blockDim.y - 1) / blockDim.y);
 
-  update_X_kernel<scalar_t><<<gridDim, blockDim, 0, stream>>>(
-      X_in_ptr, B_X_ptr, X_output_ptr, K, L, ns_A);
+  update_X_kernel<scalar_t><<<gridDim, blockDim, 0, stream>>>(X_in_ptr, B_X_ptr, X_output_ptr, K, L, ns_A);
 
   cudaError_t launch_err = cudaGetLastError();
   if (launch_err != cudaSuccess) {
-    throw std::runtime_error(
-        std::string("CUDA kernel launch error (update_X_kernel): ") +
-        cudaGetErrorString(launch_err));
+    throw std::runtime_error(std::string("CUDA kernel launch error (update_X_kernel): ") + cudaGetErrorString(launch_err));
   }
 }
 
-#define DECLARE_B_LAUNCHER(type)                                               \
-  template void update_B_launcher<type>(const type *, const type *, type *,    \
-                                        int, cudaStream_t);
+#define DECLARE_B_LAUNCHER(type) template void update_B_launcher<type>(const type *, const type *, type *, int, cudaStream_t);
 
-#define DECLARE_X_LAUNCHER(type)                                               \
-  template void update_X_launcher<type>(const type *, const type *, type *,    \
-                                        int, int, cudaStream_t);
+#define DECLARE_X_LAUNCHER(type) template void update_X_launcher<type>(const type *, const type *, type *, int, int, cudaStream_t);
 
-#define DECLARE_LAUNCHERS(type)                                                \
-  DECLARE_B_LAUNCHER(type)                                                     \
+#define DECLARE_LAUNCHERS(type)                                                                                                                      \
+  DECLARE_B_LAUNCHER(type)                                                                                                                           \
   DECLARE_X_LAUNCHER(type)
 
 DECLARE_LAUNCHERS(double)
@@ -172,23 +160,15 @@ torch::Tensor newton_schulz(const torch::Tensor &G, const int ns_steps = 5) {
 
     torch::matmul_out(A_2, A, A);
 
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-        at::ScalarType::Half, at::ScalarType::BFloat16,
-        options.dtype().toScalarType(), "update_B_dispatch", [&] {
-          update_B_launcher<scalar_t>(A.data_ptr<scalar_t>(),
-                                      A_2.data_ptr<scalar_t>(),
-                                      B.data_ptr<scalar_t>(), K, stream);
-        });
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, options.dtype().toScalarType(), "update_B_dispatch", [&] {
+      update_B_launcher<scalar_t>(A.data_ptr<scalar_t>(), A_2.data_ptr<scalar_t>(), B.data_ptr<scalar_t>(), K, stream);
+    });
 
     torch::matmul_out(B_X, B, X_current);
 
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-        at::ScalarType::Half, at::ScalarType::BFloat16,
-        options.dtype().toScalarType(), "update_X_dispatch", [&] {
-          update_X_launcher<scalar_t>(
-              X_current.data_ptr<scalar_t>(), B_X.data_ptr<scalar_t>(),
-              X_next.data_ptr<scalar_t>(), K, L, stream);
-        });
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, options.dtype().toScalarType(), "update_X_dispatch", [&] {
+      update_X_launcher<scalar_t>(X_current.data_ptr<scalar_t>(), B_X.data_ptr<scalar_t>(), X_next.data_ptr<scalar_t>(), K, L, stream);
+    });
 
     X_current.copy_(X_next, true);
   }

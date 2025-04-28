@@ -1,83 +1,172 @@
-#include <c10/core/ScalarType.h>
-#include <cuda_bf16.h>
-#include <cuda_runtime.h>
 #include <torch/extension.h>
 
-#include <cute/tensor.hpp>
-using cute::Layout, cute::Shape, cute::Stride, cute::Int;
+#include <cmath>
+#include <cooperative_groups.h>
 
-template <typename scalar_t, int BLOCKSIZE_X, int BLOCKSIZE_Y>
-__global__ void l2_normalize_rowmajor_kernel(cute::Tensor<scalar_t const *, Layout<Shape<int, int>, Stride<int, Int<1>>>> g_input,
-                                             cute::Tensor<scalar_t *, Layout<Shape<int, int>, Stride<int, Int<1>>>> g_output,
-                                             float *g_total_sum_of_squares, float epsilon) {
+namespace cg = cooperative_groups;
 
-  using namespace cute;
+__global__ void reduce_sum_squares_partial_kernel(const __nv_bfloat16 *__restrict__ input, float *__restrict__ partial_sums, int N) {
+  constexpr int BLOCK_DIM = 256;
+  constexpr int VEC_SIZE = 8;
 
-  using accum_t = float;
-  using BlockShape = Shape<_<BLOCKSIZE_Y>, _<BLOCKSIZE_X>>;
+  extern __shared__ float s_mem[];
 
-  using SMemLayout = Layout<BlockShape, Stride<Int<BLOCKSIZE_X + 1>, cute::_1>>;
+  cg::thread_block block = cg::this_thread_block();
+  cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
 
-  extern __shared__ char smem_buffer[];
-  Tensor s_input = make_tensor(make_smem_ptr(reinterpret_cast<scalar_t *>(smem_buffer)), SMemLayout{});
+  int tid = block.thread_rank();
+  int block_idx = blockIdx.x;
+  int grid_dim = gridDim.x;
 
-  int block_idx_x = blockIdx.x;
-  int block_idx_y = blockIdx.y;
-  int thread_idx_x = threadIdx.x;
-  int thread_idx_y = threadIdx.y;
+  float thread_sum_squared = 0.0f;
 
-  int tid = thread_idx_y * blockDim.x + thread_idx_x;
-  int block_dim = blockDim.x * blockDim.y;
+  int n_vec_elements = N / VEC_SIZE;
+  int start_idx_vec = block_idx * BLOCK_DIM * VEC_SIZE + tid * VEC_SIZE;
+  int stride_vec = grid_dim * BLOCK_DIM * VEC_SIZE;
 
-  Layout thread_layout_in_block = local_tile(BlockShape{}, Layout<Shape<Int<BLOCKSIZE_Y>, Int<BLOCKSIZE_X>>>{}, _1{}, tid);
-  Tensor thread_local_input = local_partition(s_input, thread_layout_in_block, tid);
+  const uint4 *input_vec = reinterpret_cast<const uint4 *>(input);
+  for (int i_vec = start_idx_vec / VEC_SIZE; i_vec < n_vec_elements; i_vec += stride_vec / VEC_SIZE) {
+    uint4 loaded_data = input_vec[i_vec];
+    const __nv_bfloat16 *vals = reinterpret_cast<const __nv_bfloat16 *>(&loaded_data);
 
-  Tensor g_input_block = logical_divide(g_input, BlockShape{}, Block{block_idx_y, block_idx_x});
-  Tensor g_output_block = logical_divide(g_output, BlockShape{}, Block{block_idx_y, block_idx_x});
-
-  // Copy Global -> Shared -------------------------------------------------------------------------
-  using GMemLayoutAtom = Layout<Shape<_8, _16>>;
-  using GMemCopyAtom = Copy_Atom<UniversalCopy<uint128_t>, scalar_t>;
-  auto tiled_copy_G2S = make_tiled_copy(GMemCopyAtom{}, Layout<Shape<Int<BLOCKSIZE_Y>, Int<BLOCKSIZE_X>>>{}, select<0, 1>(thread_layout_in_block));
-
-  copy(tiled_copy_G2S, g_input_block, s_input);
-  __syncthreads();
-
-  // Calculate Partial Sums (intrablock) -----------------------------------------------------------
-  accum_t thread_sum_of_square = static_cast<accum_t>(0);
-  for (auto i = 0; i < size(thread_local_input); ++i) {
-    accum_t val = static_cast<accum_t>(thread_local_input(i));
-    thread_sum_of_square += val * val;
-  }
-
-  // Blockwide reduction ---------------------------------------------------------------------------
-  __shared__ accum_t s_partial_sums[BLOCKSIZE_X * BLOCKSIZE_Y];
-  s_partial_sums[tid] = thread_sum_of_square;
-  __syncthreads();
-
-  for (auto offset = block_dim / 2; offset > 0; offset /= 2) {
-    if (tid < offset) {
-      s_partial_sums[tid] += s_partial_sums[tid + offset];
+#pragma unroll
+    for (int k = 0; k < VEC_SIZE; ++k) {
+      float val_f32 = __bfloat162float(vals[k]);
+      thread_sum_squared += val_f32 * val_f32;
     }
-    __syncthreads();
+  }
+
+  int remaining_start_idx = n_vec_elements * VEC_SIZE;
+  int start_idx_scalar = remaining_start_idx + block_idx * BLOCK_DIM + tid;
+  int stride_scalar = grid_dim * BLOCK_DIM;
+  for (int i = start_idx_scalar; i < N; i += stride_scalar) {
+    float val_f32 = __bfloat162float(input[i]);
+    thread_sum_squared += val_f32 * val_f32;
+  }
+
+  float warp_sum_squared = thread_sum_squared;
+#pragma unroll
+  for (int offset = warp.size() / 2; offset > 0; offset /= 2) {
+    warp_sum_squared += warp.shfl_down(warp_sum_squared, offset);
+  }
+  if (warp.thread_rank() == 0) {
+    s_mem[warp.meta_group_rank()] = warp_sum_squared;
+  }
+  block.sync();
+
+  float block_sum_squared = 0.0f;
+  if (warp.meta_group_rank() == 0) {
+    block_sum_squared = (tid < block.size() / warp.size()) ? s_mem[tid] : 0.0f;
+#pragma unroll
+    for (int offset = warp.size() / 2; offset > 0; offset /= 2) {
+      block_sum_squared += warp.shfl_down(block_sum_squared, offset);
+    }
   }
 
   if (tid == 0) {
-    atomicAdd(g_total_sum_of_squares, s_partial_sums[0]);
+    partial_sums[block_idx] = block_sum_squared;
   }
-  __syncthreads();
+}
 
-  // Calculate normalization factor ----------------------------------------------------------------
-  __shared__ accum_t s_inv_norm;
+__global__ void reduce_final_sum_kernel(const float *__restrict__ partial_sums, float *__restrict__ total_sum_squared_out, int N) {
+  extern __shared__ float s_mem[];
+
+  cg::thread_block block = cg::this_thread_block();
+  cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+  int tid = block.thread_rank();
+
+  float thread_sum = 0.0f;
+  for (int i = tid; i < N; i += blockDim.x) {
+    thread_sum += partial_sums[i];
+  }
+
+  float warp_sum = thread_sum;
+#pragma unroll
+  for (int offset = warp.size() / 2; offset > 0; offset /= 2) {
+    warp_sum += warp.shfl_down(warp_sum, offset);
+  }
+
+  if (warp.thread_rank() == 0 && warp.meta_group_rank() < (blockDim.x / warp.size())) {
+    s_mem[warp.meta_group_rank()] = warp_sum;
+  }
+  block.sync();
+
+  float final_sum = 0.0f;
+  if (warp.meta_group_rank() == 0) {
+    final_sum = (tid < blockDim.x / warp.size()) ? s_mem[tid] : 0.0f;
+#pragma unroll
+    for (int offset = warp.size() / 2; offset > 0; offset /= 2) {
+      final_sum += warp.shfl_down(final_sum, offset);
+    }
+  }
+
   if (tid == 0) {
-    accum_t total_sum_of_squares = *g_total_sum_of_squares;
-    s_inv_norm = rsqrtf(total_sum_of_squares + epsilon);
+    *total_sum_squared_out = final_sum;
+  }
+}
+
+__global__ void scale_by_inv_norm_inplace_kernel(__nv_bfloat16 *__restrict__ input, const float *__restrict__ total_sum_squared_ptr, int N) {
+  constexpr int BLOCK_DIM = 256;
+  constexpr int VEC_SIZE = 8;
+  constexpr float epsilon = 1e-12f;
+
+  __shared__ float s_inv_norm;
+
+  if (threadIdx.x == 0) {
+    float sum_squared = *total_sum_squared_ptr;
+    s_inv_norm = (sum_squared > epsilon) ? rsqrtf(sum_squared) : 0.0f;
   }
   __syncthreads();
 
-  // Apply normalization factor --------------------------------------------------------------------
-  Tensor thread_local_output = local_partition(x_output_block, thread_layout_in_block, tid);
-  for (auto i = 0; i < size(thread_local_input); ++i) {
-    thread_local_output(i) = static_cast<scalar_t>(static_cast<accum_t>(thread_local_input(i)) * s_inv_norm);
+  float inv_norm = s_inv_norm;
+
+  int tid = threadIdx.x;
+  int block_idx = blockIdx.x;
+  int grid_dim = gridDim.x;
+
+  int n_vec_elements = N / VEC_SIZE;
+  int start_idx_vec = block_idx * BLOCK_DIM * VEC_SIZE + tid * VEC_SIZE;
+  int stride_vec = grid_dim * BLOCK_DIM * VEC_SIZE;
+
+  uint4 *input_vec = reinterpret_cast<uint4 *>(input);
+  for (int i_vec = start_idx_vec / VEC_SIZE; i_vec < n_vec_elements; i_vec += stride_vec / VEC_SIZE) {
+    uint4 loaded_data = input_vec[i_vec];
+    const __nv_bfloat16 *in_vals = reinterpret_cast<const __nv_bfloat16 *>(&loaded_data);
+    __nv_bfloat16 out_vals[VEC_SIZE];
+
+#pragma unroll
+    for (int k = 0; k < VEC_SIZE; ++k) {
+      float val_f32 = __bfloat162float(in_vals[k]);
+      float scaled_val = val_f32 * inv_norm;
+      out_vals[k] = __float2bfloat16(scaled_val);
+    }
+    input_vec[i_vec] = *reinterpret_cast<uint4 *>(out_vals);
   }
+
+  int remaining_start_idx = n_vec_elements * VEC_SIZE;
+  int start_idx_scalar = remaining_start_idx + block_idx * BLOCK_DIM + tid;
+  int stride_scalar = grid_dim * BLOCK_DIM;
+  for (int i = start_idx_scalar; i < N; i += stride_scalar) {
+    float val_f32 = __bfloat162float(input[i]);
+    float scaled_val = val_f32 * inv_norm;
+    input[i] = __float2bfloat16(scaled_val);
+  }
+}
+
+extern "C" {
+void reduce_sum_squares_partial_kernel_launcher(const __nv_bfloat16 *input, float *partial_sums, int N, int grid_dim, int block_dim,
+                                                size_t shared_mem_size, cudaStream_t stream) {
+  reduce_sum_squares_partial_kernel<<<grid_dim, block_dim, shared_mem_size, stream>>>(input, partial_sums, N);
+}
+
+void reduce_final_sum_kernel_launcher(const float *partial_sums, float *total_sum_squared_out, int N, int grid_dim, int block_dim,
+                                      size_t shared_mem_size, cudaStream_t stream) {
+  reduce_final_sum_kernel<<<grid_dim, block_dim, shared_mem_size, stream>>>(partial_sums, total_sum_squared_out, N);
+}
+
+void scale_by_inv_norm_inplace_kernel_launcher(__nv_bfloat16 *input, const float *total_sum_squared_ptr, int N, int grid_dim, int block_dim,
+                                               cudaStream_t stream) {
+  scale_by_inv_norm_inplace_kernel<<<grid_dim, block_dim, 0, stream>>>(input, total_sum_squared_ptr, N);
+}
 }

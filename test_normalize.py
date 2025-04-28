@@ -18,34 +18,33 @@ def test_torch(shape, dtype):
 
 
 if __name__ == "__main__":
-    for dtype in [torch.float32, torch.bfloat16]:
-        for shape in [(1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048)]:
-            my_kernel_time_us = (
-                benchmark.Timer(
-                    stmt="test_my_kernel(shape, dtype)",
-                    setup="from __main__ import test_my_kernel",
-                    globals={"shape": shape, "dtype": dtype},
-                )
-                .timeit(1000)
-                .mean
-                * 1e6
+    for shape in [(1024, 1024), (1024, 2048), (2048, 1024), (2048, 2048), (5096, 5096)]:
+        my_kernel_time_us = (
+            benchmark.Timer(
+                stmt="test_my_kernel(shape, dtype)",
+                setup="from __main__ import test_my_kernel",
+                globals={"shape": shape, "dtype": torch.bfloat16},
             )
-            torch_time_us = (
-                benchmark.Timer(
-                    stmt="test_torch(shape, dtype)",
-                    setup="from __main__ import test_torch",
-                    globals={"shape": shape, "dtype": dtype},
-                )
-                .timeit(1000)
-                .mean
-                * 1e6
+            .timeit(1000)
+            .mean
+            * 1e6
+        )
+        torch_time_us = (
+            benchmark.Timer(
+                stmt="test_torch(shape, dtype)",
+                setup="from __main__ import test_torch",
+                globals={"shape": shape, "dtype": torch.bfloat16},
             )
+            .timeit(1000)
+            .mean
+            * 1e6
+        )
 
-            speedup = torch_time_us / my_kernel_time_us
+        speedup = torch_time_us / my_kernel_time_us
 
-            print(f"Shape: {shape} \t dtype: {dtype}")
-            print(f"torch: {torch_time_us:0.4f} (µs)")
-            print(f"my kernels: {my_kernel_time_us:0.4f} (µs)")
-            print(f"Speedup: {speedup: 0.4f} x")
+        print(f"Shape: {shape} \t dtype: {torch.bfloat16}")
+        print(f"torch: {torch_time_us:0.4f} (µs)")
+        print(f"my kernels: {my_kernel_time_us:0.4f} (µs)")
+        print(f"Speedup: {speedup: 0.4f} x")
 
-            print("\n")
+        print("\n")
