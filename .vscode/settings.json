@@ -5,5 +5,26 @@
         "/usr/local/cuda/include",
         "/usr/include/python3.12",
         "csrc/cutlass/include"
-    ]
+    ],
+    "files.associations": {
+        "array": "cpp",
+        "*.tcc": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "memory": "cpp",
+        "optional": "cpp",
+        "string_view": "cpp",
+        "fstream": "cpp",
+        "istream": "cpp",
+        "ostream": "cpp",
+        "sstream": "cpp",
+        "stop_token": "cpp",
+        "streambuf": "cpp",
+        "thread": "cpp",
+        "functional": "cpp",
+        "regex": "cpp",
+        "tuple": "cpp",
+        "variant": "cpp",
+        "__bit_reference": "cpp"
+    }
 }
