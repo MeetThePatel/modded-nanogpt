@@ -11,3 +11,4 @@ IncludeCategories:
     Priority:        1
 InsertNewlineAtEOF: Yes
 ColumnLimit: 150
+IndentWidth: 4

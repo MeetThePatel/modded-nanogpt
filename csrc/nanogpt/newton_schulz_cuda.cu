@@ -1,30 +1,57 @@
+#include <cute/layout.hpp>
 #include <cute/tensor.hpp>
 #include <cutlass/arch/arch.h>
 #include <cutlass/cutlass.h>
-#include <cutlass/epilogue/collective/collective_builder.hpp>
-#include <cutlass/epilogue/collective/default_epilogue.hpp>
-#include <cutlass/epilogue/thread/linear_combination.h>
-#include <cutlass/gemm/device/default_gemm_configuration.h>
-#include <cutlass/gemm/device/gemm_universal.h>
-#include <cutlass/gemm/device/gemm_universal_adapter.h>
-#include <cutlass/gemm/threadblock/threadblock_swizzle.h>
+#include <cutlass/gemm/device/gemm.h>
 #include <cutlass/layout/layout.h>
+#include <torch/extension.h>
 
-using ElementInput = cutlass::bfloat16_t;
-using ElementOutput = cutlass::bfloat16_t;
-using ElementAccumulator = float;
+constexpr float NS_A = 3.4445;
+constexpr float NS_B = -4.7750;
+constexpr float NS_C = 2.0315;
 
-using LayoutInputA = cutlass::layout::RowMajor;
-using LayoutInputB = cutlass::layout::RowMajor;
-using LayoutOutput = cutlass::layout::RowMajor;
+torch::Tensor newton_schulz_cuda(const torch::Tensor &G, const int ns_steps) {
+    // Assume that G is already normalized.
+    TORCH_CHECK(G.is_cuda(), "G must be a CUDA tensor.");
+    TORCH_CHECK(G.is_contiguous(), "G must be contiguous.");
+    TORCH_CHECK(G.scalar_type() == torch::kBFloat16, "G must have dtype bfloat16.");
 
-using Arch = cutlass::arch::Sm89;
-using OperatorClass = cutlass::arch::OpClassTensorOp;
-using Swizzle = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+    auto X = G;
 
-using Gemm_XXt = cutlass::gemm::device::GemmUniversalAdapter<cutlass::gemm::kernel::DefaultGemmUniversal<
-    ElementInput, LayoutInputA, cutlass::ComplexTransform::kNone, ElementInput, LayoutInputB, cutlass::ComplexTransform::kConjugate, ElementOutput,
-    LayoutOutput, ElementAccumulator, OperatorClass, Arch, cutlass::gemm::GemmShape<128, 128, 32>, cutlass::gemm::GemmShape<64, 64, 32>,
-    cutlass::gemm::GemmShape<16, 8, 16>,
-    cutlass::epilogue::thread::LinearCombination<ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value, ElementAccumulator, ElementOutput>,
-    Swizzle, 2>>;
+    int M = G.size(-2);
+    int N = G.size(-1);
+
+    bool flipped = false;
+    if (M > N) {
+        X = X.transpose(-2, -1).contiguous();
+        std::swap(M, N);
+        flipped = true;
+    }
+
+    auto sq = X.to(torch::kFloat32).pow(2).sum({-2, -1}, true);
+    auto denom = sq.add(1e-7f).sqrt();
+    X = X.to(torch::kFloat32).div(denom).to(torch::kBFloat16);
+
+    auto opts = X.options();
+
+    torch::Tensor A = torch::empty({M, M}, opts);
+    torch::Tensor C = torch::empty({M, M}, opts);
+    torch::Tensor X_new = torch::empty_like(X);
+
+    for (int i = 0; i < ns_steps; ++i) {
+        A = at::mm(X, X.transpose(-2, -1));
+        C = at::mm(A, A);
+
+        torch::Tensor B = A.mul(NS_B).add_(C.mul(NS_C));
+
+        torch::Tensor BX = at::mm(B, X);
+        X_new = X.mul(NS_A).add_(BX);
+
+        X = X_new;
+    }
+
+    if (flipped) {
+        X = X.transpose(-2, -1).contiguous();
+    }
+    return X;
+}
