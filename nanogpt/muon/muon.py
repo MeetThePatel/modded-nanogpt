@@ -2,16 +2,10 @@ __all__ = ["Muon"]
 
 from typing import Any, Dict, List, Optional, Union, cast
 import torch
-from torch.nn import functional as F
 from torch import Tensor
 from torch.optim.optimizer import ParamsT, _use_grad_for_differentiable, Optimizer
 
-from .newton_schulz import newton_schulz
-
-
-@torch.compile
-def norm(x: Tensor) -> Tensor:
-    F.normalize(x, dim=(0, 1))
+# from muon import _fused_muon_
 
 
 class Muon(torch.optim.Optimizer):
@@ -61,11 +55,11 @@ class Muon(torch.optim.Optimizer):
             nesterov=nesterov,
         )
 
-        super().__init__(params, defaults)
-
         for p in params:
             if not 2 <= len(p.shape):
                 raise ValueError("Muon optimizer can only work with 2+ dimensional tensors.")
+
+        super().__init__(params, defaults)
 
     def __setstate__(self, state: Dict[str, Any]):
         super().__setstate__(state)
@@ -75,8 +69,6 @@ class Muon(torch.optim.Optimizer):
             group.setdefault("ns_steps", 5)
 
     def __init_group(self, group, params, grads, momentum_buffer_list):
-        has_sparse_grad = False
-
         for p in group["params"]:
             if p.grad is not None:
                 params.append(p)
@@ -85,8 +77,6 @@ class Muon(torch.optim.Optimizer):
                 if group["momentum"] != 0:
                     state = self.state[p]
                     momentum_buffer_list.append(state.get("momentum_buffer"))
-
-        return has_sparse_grad
 
     @_use_grad_for_differentiable
     def step(self, closure=None):
@@ -194,6 +184,26 @@ def muon(
     params: list[Tensor],
     grads: list[Tensor],
     momentum_buffer_list: list[Tensor],
+    *,
+    momentum: float,
+    lr: float,
+    nesterov: bool,
+):
+    _fused_muon(
+        params,
+        grads,
+        momentum_buffer_list,
+        momentum=momentum,
+        lr=lr,
+        nesterov=nesterov,
+    )
+
+
+def _fused_muon(
+    params: list[Tensor],
+    grads: list[Tensor],
+    momentum_buffer_list: list[Tensor],
+    *,
     momentum: float,
     lr: float,
     nesterov: bool,
@@ -201,32 +211,23 @@ def muon(
     if not params:
         return
 
-    # grad_scale_dict:  # TODO: do this later
-
     no_momentum_buffer = momentum == 0
+
     is_first_step = all(t is None for t in momentum_buffer_list) and not no_momentum_buffer
-
     if is_first_step:
-        for idx, g in enumerate(grads):
-            momentum_buffer_list[idx] = torch.empty_like(g)
+        for idx, grad in enumerate(grads):
+            momentum_buffer_list[idx] = torch.empty_like(grad)
 
-    # TODO: Will need to test on multiGPU setup, for now, following optim.SGD API
-    grouped_tensors = Optimizer._group_tensors_by_device_and_dtype(
-        [params, grads, momentum_buffer_list],
-        with_indices=False,
-    )
+    grouped_tensors = Optimizer._group_tensors_by_device_and_dtype([params, grads, momentum_buffer_list], with_indices=False)
 
-    for (device, _), (
-        (device_params_, device_grads_, device_momentum_buffer_list),
-        _,
-    ) in grouped_tensors.items():
-        device_params: List[Tensor] = cast(List[Tensor], device_params_)
-        device_grads: List[Tensor] = cast(List[Tensor], device_params_)
+    for (device, _), ((device_params_, device_grads_, device_momentum_buffer_list), _) in grouped_tensors.items():
+        device_params: list[Tensor] = cast(list[Tensor], device_params_)
+        device_grads: list[Tensor] = cast(list[Tensor], device_grads_)
 
-    nanogpt._muon(
+    _fused_muon_(
         device_params,
         device_grads,
-        [] if no_momentum_buffer else cast(List[Tensor], device_momentum_buffer_list),
+        [] if no_momentum_buffer else cast(list[Tensor], device_momentum_buffer_list),
         momentum=momentum,
         lr=lr,
         nesterov=nesterov,

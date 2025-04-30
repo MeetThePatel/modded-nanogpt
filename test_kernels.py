@@ -1,11 +1,8 @@
 import lovely_tensors as lt
 
 import torch
-from torch import Tensor
-from torch.nn import functional as F
-import torch.utils.benchmark as benchmark
 
-from nanogpt_kernels import newton_schulz
+from muon import newton_schulz
 from nanogpt.muon.newton_schulz import newton_schulz as reference_newton_schulz
 
 

@@ -11,7 +11,6 @@ constexpr float NS_B = -4.7750;
 constexpr float NS_C = 2.0315;
 
 torch::Tensor newton_schulz_cuda(const torch::Tensor &G, const int ns_steps) {
-    // Assume that G is already normalized.
     TORCH_CHECK(G.is_cuda(), "G must be a CUDA tensor.");
     TORCH_CHECK(G.is_contiguous(), "G must be contiguous.");
     TORCH_CHECK(G.scalar_type() == torch::kBFloat16, "G must have dtype bfloat16.");
@@ -28,6 +27,7 @@ torch::Tensor newton_schulz_cuda(const torch::Tensor &G, const int ns_steps) {
         flipped = true;
     }
 
+    // Normalization
     auto sq = X.to(torch::kFloat32).pow(2).sum({-2, -1}, true);
     auto denom = sq.add(1e-7f).sqrt();
     X = X.to(torch::kFloat32).div(denom).to(torch::kBFloat16);

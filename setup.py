@@ -12,14 +12,14 @@ if os.path.isdir(".git"):
 
 
 setup(
-    name="nanogpt_kernels",
+    name="muon",
     packages=find_packages(exclude=("csrc", "data", "img", "records", "logs")),
     ext_modules=[
         CUDAExtension(
-            name="nanogpt_kernels",
+            name="muon",
             sources=[
-                "csrc/nanogpt/nanogpt.cpp",
-                "csrc/nanogpt/newton_schulz_cuda.cu",
+                "csrc/muon/muon.cpp",
+                "csrc/muon/newton_schulz_cuda.cu",
             ],
             extra_compile_args={
                 "cxx": ["-w", "-O3", "-std=c++17"],
@@ -36,7 +36,7 @@ setup(
                 ],
             },
             include_dirs=[
-                Path(this_dir) / "csrc" / "nanogpt",
+                Path(this_dir) / "csrc" / "muon",
                 Path(this_dir) / "csrc" / "cutlass" / "include",
             ],
         )
