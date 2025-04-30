@@ -17,10 +17,7 @@ setup(
     ext_modules=[
         CUDAExtension(
             name="muon",
-            sources=[
-                "csrc/muon/muon.cpp",
-                "csrc/muon/newton_schulz_cuda.cu",
-            ],
+            sources=["csrc/muon/muon.cpp", "csrc/muon/newton_schulz_cuda.cu", "csrc/muon/muon_cuda.cu"],
             extra_compile_args={
                 "cxx": ["-w", "-O3", "-std=c++17"],
                 "nvcc": [

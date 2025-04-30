@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 from torch.optim.optimizer import ParamsT, _use_grad_for_differentiable, Optimizer
 
-# from muon import _fused_muon_
+from muon import _fused_muon_cuda
 
 
 class Muon(torch.optim.Optimizer):
@@ -27,7 +27,6 @@ class Muon(torch.optim.Optimizer):
     Arguments:
         lr: The learning rate used by the internal SGD.
         momentum: The momentum used by the internal SGD.
-        nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
 
@@ -37,22 +36,18 @@ class Muon(torch.optim.Optimizer):
         lr: Union[float, Tensor],
         momentum: Union[float, Tensor] = 0.95,
         ns_steps: int = 5,
-        nesterov: bool = True,
     ):
         if not 0.0 <= lr:
-            raise ValueError(f"Invalid learning rate: {lr}")
-        if not 1.0 >= momentum:
-            raise ValueError(f"Invalid momentum: {momentum}")
+            raise ValueError(f"lr must be >= 0. Recieved: {lr}")
+        if not (0.0 < momentum <= 1.0):
+            raise ValueError(f"momentum must be in (0, 1]. Recieved: {momentum}")
         if not 0 < ns_steps:
-            raise ValueError(f"Invalid Newton-Schulz step count: {ns_steps}")
-        if nesterov and momentum <= 0:
-            raise ValueError("Nesterov momentum requires a momentum")
+            raise ValueError(f"ns_steps must be > 0. Recieved: {ns_steps}")
 
         defaults = dict(
             lr=lr,
             momentum=momentum,
             ns_steps=ns_steps,
-            nesterov=nesterov,
         )
 
         for p in params:
@@ -65,7 +60,6 @@ class Muon(torch.optim.Optimizer):
         super().__setstate__(state)
 
         for group in self.param_groups:
-            group.setdefault("nesterov", True)
             group.setdefault("ns_steps", 5)
 
     def __init_group(self, group, params, grads, momentum_buffer_list):
@@ -98,7 +92,7 @@ class Muon(torch.optim.Optimizer):
                 momentum_buffer_list=momentum_buffer_list,
                 momentum=group["momentum"],
                 lr=group["lr"],
-                nesterov=group["nesterov"],
+                ns_steps=group["ns_steps"],
                 # weight_decay=group['weight_decay']  # TODO: Generalize to weight decay
             )
 
@@ -109,76 +103,6 @@ class Muon(torch.optim.Optimizer):
 
         return loss
 
-    #     defaults = dict(momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
-
-    #     mlp_params = params[0]["params"]
-    #     mlp_lr = params[0]["lr"]
-    #     attn_params = params[1]["params"]
-    #     attn_lr = params[1]["lr"]
-
-    #     param_groups = []
-    #     for size in {p.numel() for (_, p) in mlp_params}:
-    #         group_params = [(n, p) for (n, p) in mlp_params if p.numel() == size]
-    #         b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
-    #         group = dict(
-    #             params=[p for (_, p) in group_params],
-    #             param_names=[n for (n, _) in group_params],
-    #             update_buffer=b,
-    #             update_buffer_views=[b[i] for i in range(world_size)],
-    #             lr=mlp_lr,
-    #         )
-    #         param_groups.append(group)
-    #     for size in {p.numel() for (_, p) in attn_params}:
-    #         group_params = [(n, p) for (n, p) in attn_params if p.numel() == size]
-    #         b = torch.empty(world_size, size, dtype=torch.bfloat16, device="cuda")
-    #         group = dict(
-    #             params=[p for (_, p) in group_params],
-    #             param_names=[n for (n, _) in group_params],
-    #             update_buffer=b,
-    #             update_buffer_views=[b[i] for i in range(world_size)],
-    #             lr=attn_lr,
-    #         )
-    #         param_groups.append(group)
-    #     super().__init__(param_groups, defaults)
-
-    # @torch.no_grad()
-    # def step(self):
-    #     for group in self.param_groups:
-    #         update_buffer: Tensor = group["update_buffer"]
-    #         update_buffer_views: list[Tensor] = group["update_buffer_views"]
-    #         # generate weight updates in distributed fashion
-    #         params: list[Tensor] = group["params"]
-    #         handle = None
-    #         params_world = None
-
-    #         def update_prev():  # optimized Muon implementation contributed by @YouJiacheng
-    #             handle.wait()
-    #             for p_world, g_world in zip(params_world, update_buffer_views):
-    #                 p_world.add_(g_world.view_as(p_world), alpha=-group["lr"] * max(1, p_world.size(-2) / p_world.size(-1)) ** 0.5)
-
-    #         for base_i in range(len(params))[:: self.world_size]:
-    #             if base_i + self.rank < len(params):
-    #                 p = params[base_i + self.rank]
-
-    #                 g = p.grad
-    #                 assert g is not None
-
-    #                 state = self.state[p]
-    #                 if "momentum_buffer" not in state:
-    #                     state["momentum_buffer"] = torch.zeros_like(g)
-    #                 buf: Tensor = state["momentum_buffer"]
-
-    #                 buf.lerp_(g, 1 - group["momentum"])
-    #                 g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-    #                 g = newton_schulz(g, steps=group["ns_steps"]).flatten()
-    #             else:
-    #                 g = update_buffer_views[self.rank]
-    #             if base_i > 0:
-    #                 update_prev()  # async all_gather instead of sync all_reduce by @YouJiacheng
-    #             handle = dist.all_gather_into_tensor(update_buffer, g, async_op=True)
-    #             params_world = params[base_i : base_i + self.world_size]
-    #         update_prev()
-
 
 def muon(
     params: list[Tensor],
@@ -187,7 +111,7 @@ def muon(
     *,
     momentum: float,
     lr: float,
-    nesterov: bool,
+    ns_steps: int,
 ):
     _fused_muon(
         params,
@@ -195,7 +119,7 @@ def muon(
         momentum_buffer_list,
         momentum=momentum,
         lr=lr,
-        nesterov=nesterov,
+        ns_steps=ns_steps,
     )
 
 
@@ -206,7 +130,7 @@ def _fused_muon(
     *,
     momentum: float,
     lr: float,
-    nesterov: bool,
+    ns_steps: int,
 ):
     if not params:
         return
@@ -224,12 +148,12 @@ def _fused_muon(
         device_params: list[Tensor] = cast(list[Tensor], device_params_)
         device_grads: list[Tensor] = cast(list[Tensor], device_grads_)
 
-    _fused_muon_(
+    _fused_muon_cuda(
         device_params,
         device_grads,
         [] if no_momentum_buffer else cast(list[Tensor], device_momentum_buffer_list),
         momentum=momentum,
         lr=lr,
-        nesterov=nesterov,
+        ns_steps=ns_steps,
         is_first_step=is_first_step,
     )
