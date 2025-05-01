@@ -33,16 +33,16 @@ def main(logger: DistributedLogger, tensorboard_writer: SummaryWriter):
     dist.barrier()
 
     data_params = DataParams(
-        train_seq_len=32 * 1024,
-        val_seq_len=32 * 1024,
+        train_seq_len=20 * 1024,
+        val_seq_len=20 * 1024,
     )
     train_loader = distributed_data_generator(data_params.train_files, world_size * data_params.train_seq_len, rank, world_size)
 
     stage_0_model_params = NanoGPTParams(
         num_layers=12,
         num_heads=6,
-        head_dim=32,
-        model_dim=192,
+        head_dim=128,
+        model_dim=768,
         max_seq_len=max(data_params.train_seq_len, data_params.val_seq_len),
     )
     model = NanoGPT(stage_0_model_params)
@@ -63,21 +63,21 @@ def main(logger: DistributedLogger, tensorboard_writer: SummaryWriter):
         validate_every=50,
     )
 
-    stage_1_trainer_params = TrainerParams(
-        adam_head_lr=0.22,
-        adam_embed_lr=0.6,
-        adam_scalar_lr=0.04,
-        adam_betas=[0.8, 0.95],
-        #
-        muon_attn_lr=0.25,
-        muon_mlp_lr=0.35,
-        muon_momentum=0.85,
-        muon_ns_steps=5,
-        #
-        n_steps=250,
-        warmup_steps=10,
-        validate_every=50,
-    )
+    # stage_1_trainer_params = TrainerParams(
+    #     adam_head_lr=0.22,
+    #     adam_embed_lr=0.6,
+    #     adam_scalar_lr=0.04,
+    #     adam_betas=[0.8, 0.95],
+    #     #
+    #     muon_attn_lr=0.25,
+    #     muon_mlp_lr=0.35,
+    #     muon_momentum=0.85,
+    #     muon_ns_steps=5,
+    #     #
+    #     n_steps=250,
+    #     warmup_steps=10,
+    #     validate_every=50,
+    # )
 
     global_step = 0
     train_stage(
@@ -92,19 +92,19 @@ def main(logger: DistributedLogger, tensorboard_writer: SummaryWriter):
         tensorboard_writer=tensorboard_writer,
     )
 
-    model.hyperclone_(dim=-1)
+    # model.hyperclone_(dim=-1)
 
-    train_stage(
-        model,
-        stage_1_trainer_params,
-        data_params,
-        global_step=global_step,
-        rank=rank,
-        world_size=world_size,
-        train_loader=train_loader,
-        logger=logger,
-        tensorboard_writer=tensorboard_writer,
-    )
+    # train_stage(
+    #     model,
+    #     stage_1_trainer_params,
+    #     data_params,
+    #     global_step=global_step,
+    #     rank=rank,
+    #     world_size=world_size,
+    #     train_loader=train_loader,
+    #     logger=logger,
+    #     tensorboard_writer=tensorboard_writer,
+    # )
 
     logger.log(
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "

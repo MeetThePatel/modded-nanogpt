@@ -7,7 +7,7 @@
 #include <c10/util/Exception.h>
 #include <torch/extension.h>
 
-torch::Tensor newton_schulz_cuda(const torch::Tensor &G, const int ns_steps);
+torch::Tensor newton_schulz_dispatch(const torch::Tensor &G, int ns_steps);
 
 namespace {
 
@@ -143,7 +143,7 @@ void _fused_muon_kernel_cuda_(at::TensorList params, at::TensorList grads, at::T
     });
 
     for (auto grad : grads) {
-        grad = newton_schulz_cuda(grad, ns_steps);
+        grad = newton_schulz_dispatch(grad, ns_steps);
     }
 
     AT_DISPATCH_FLOATING_TYPES_AND(at::kBFloat16, params[0].scalar_type(), "fused_muon_epilogue_kernel_cuda",
@@ -151,7 +151,17 @@ void _fused_muon_kernel_cuda_(at::TensorList params, at::TensorList grads, at::T
 }
 
 // This is just for consistency with Torch's API that accepts lr as a tensor.
-void _fused_muon_kernel_cuda_(at::Tensor params, at::TensorList grads, at::TensorList momentum_buffer_list, const double momentum,
+void _fused_muon_kernel_cuda_(at::TensorList params, at::TensorList grads, at::TensorList momentum_buffer_list, const double momentum,
                               const at::Tensor &lr, const int ns_steps, const bool is_first_step) {
     _fused_muon_kernel_cuda_(params, grads, momentum_buffer_list, momentum, lr.item<double>(), ns_steps, is_first_step);
+}
+
+void fused_muon_kernel_cuda(const std::vector<at::Tensor> &params, const std::vector<at::Tensor> &grads,
+                            const std::vector<at::Tensor> &momentum_buffer_list, const double momentum, const double lr, const int ns_steps,
+                            const bool is_first_step) {
+    at::TensorList params_tensorlist(params.data(), params.size());
+    at::TensorList grads_tensorlist(grads.data(), grads.size());
+    at::TensorList momentum_buffer_list_tensorlist(momentum_buffer_list.data(), momentum_buffer_list.size());
+
+    _fused_muon_kernel_cuda_(params_tensorlist, grads_tensorlist, momentum_buffer_list, momentum, lr, ns_steps, is_first_step);
 }

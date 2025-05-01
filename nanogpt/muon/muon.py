@@ -33,7 +33,7 @@ class Muon(torch.optim.Optimizer):
     def __init__(
         self,
         params: ParamsT,
-        lr: Union[float, Tensor],
+        lr: Union[float, Tensor] = 3e-3,
         momentum: Union[float, Tensor] = 0.95,
         ns_steps: int = 5,
     ):
@@ -48,11 +48,8 @@ class Muon(torch.optim.Optimizer):
             lr=lr,
             momentum=momentum,
             ns_steps=ns_steps,
+            differentiable=False,
         )
-
-        for p in params:
-            if not 2 <= len(p.shape):
-                raise ValueError("Muon optimizer can only work with 2+ dimensional tensors.")
 
         super().__init__(params, defaults)
 

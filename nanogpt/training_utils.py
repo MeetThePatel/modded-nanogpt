@@ -46,7 +46,8 @@ def train_stage(
     logger: DistributedLogger | None = None,
     tensorboard_writer: SummaryWriter | None = None,
 ):
-    model = model.cuda()
+    model = model.to(rank)
+
     for m in model.modules():
         m.bfloat16()
     for param in model.parameters():
@@ -74,8 +75,7 @@ def train_stage(
             dict(params=muon_attn_params, lr=train_params.muon_attn_lr),
         ],
         momentum=train_params.muon_momentum,
-        rank=rank,
-        world_size=world_size,
+        ns_steps=5,
     )
     optimizers = [adam_optimizer, muon_optimizer]
 
@@ -143,8 +143,14 @@ def train_stage(
         for param in model.parameters():
             dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
 
-        for opt in optimizers:
-            opt.step()
+        # for opt in optimizers:
+        #     opt.step()
+
+        with torch.cuda.nvtx.range("Adam Step"):
+            optimizers[0].step()
+
+        with torch.cuda.nvtx.range("Muon Step"):
+            optimizers[1].step()
 
         model.zero_grad(set_to_none=True)
 
