@@ -450,7 +450,8 @@ class Hyperparameters:
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 1500 # number of iterations to run
-    cooldown_frac = 0.1 # fraction of training spent cooling down the learning rate
+    warmup_steps = 25 # fraction of training spent warming up
+    min_lr_factor = 0.1
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -514,29 +515,27 @@ scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
 # init the optimizer(s)
-adam_params = [dict(params=head_params, lr=0.22 / math.sqrt(8)), dict(params=embed_params, lr=0.6 / math.sqrt(8)), dict(params=scalar_params, lr=0.04 / math.sqrt(8))]
+adam_params = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = MuonPower(hidden_matrix_params, lr=0.05 / math.sqrt(8), momentum=0.95, p=0.8, rank=rank, world_size=world_size)
+optimizer2 = MuonPower(hidden_matrix_params, lr=0.05, momentum=0.95, p=0.8, rank=rank, world_size=world_size)
 optimizers = [optimizer1, optimizer2]
 for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
 
-MIN_LR_FACTOR = 0.1
-WARMUP_STEPS=25
-
-def get_lr(step: int):
-    if WARMUP_STEPS > 0 and step < WARMUP_STEPS:
-        return (step + 1) / WARMUP_STEPS
-    else:
-        adjusted_step = step - WARMUP_STEPS if WARMUP_STEPS > 0 else step
-        adjusted_total = args.num_iterations - WARMUP_STEPS if WARMUP_STEPS > 0 else args.num_iterations
-        x = adjusted_step / adjusted_total
-        assert 0 <= x < 1
-        return MIN_LR_FACTOR + (1.0 - MIN_LR_FACTOR) * 0.5 * (1 + math.cos(math.pi * x))
-
+def get_lr(step: int) -> float:
+    if args.warmup_steps > 0 and step < args.warmup_steps:
+        return (step + 1) / args.warmup_steps
+    
+    adjusted_step = step - args.warmup_steps
+    decay_steps = args.num_iterations - args.warmup_steps
+    if decay_steps > 0:
+        x = adjusted_step / decay_steps
+        assert 0 <= x <= 1
+        return args.min_lr_factor + (1.0 - args.min_lr_factor) * 0.5 * (1 + math.cos(math.pi * x))
+    return args.min_lr_factor
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
@@ -725,7 +724,7 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms/(step + 1):.2f}ms", console=True)
+    print0(f"step:{step+1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms/(step + 1):.2f}ms muon_lr_factor:{get_lr(step):.4f}", console=True)
 
 print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)
