@@ -6,6 +6,7 @@ import uuid
 import time
 import copy
 import glob
+import math
 from dataclasses import dataclass
 from functools import lru_cache, partial # Added partial for hook registration
 from pathlib import Path
@@ -133,7 +134,7 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
         X = X.mT
     return X
 
-class Muon(torch.optim.Optimizer):
+class MuonPower(torch.optim.Optimizer):
     """
     Muon - MomentUm Orthogonalized by Newton-schulz
 
@@ -155,10 +156,10 @@ class Muon(torch.optim.Optimizer):
         nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
         ns_steps: The number of Newton-Schulz iteration steps to use.
     """
-    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5, rank=0, world_size=1):
+    def __init__(self, params, lr=0.02, momentum=0.95, p=0.8, nesterov=True, ns_steps=5, rank=0, world_size=1):
         self.rank = rank
         self.world_size = world_size
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+        defaults = dict(lr=lr, momentum=momentum, p=p, nesterov=nesterov, ns_steps=ns_steps)
         params: list[Tensor] = [*params]
         param_groups = []
         for size in {p.numel() for p in params}:
@@ -187,6 +188,7 @@ class Muon(torch.optim.Optimizer):
                     p = params[base_i + self.rank]
                     g = p.grad
                     assert g is not None
+                    g = torch.sign(g) * torch.pow(torch.abs(g), group['p'])
                     state = self.state[p]
                     if "momentum_buffer" not in state:
                         state["momentum_buffer"] = torch.zeros_like(g)
@@ -447,8 +449,8 @@ class Hyperparameters:
     train_seq_len = 48*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 1770 # number of iterations to run
-    cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
+    num_iterations = 1500 # number of iterations to run
+    cooldown_frac = 0.1 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
     # evaluation and logging
@@ -459,7 +461,7 @@ args = Hyperparameters()
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
-assert world_size == 8 # this code is designed for 8xH100
+assert world_size == 1 # this code is designed for 8xH100
 assert torch.cuda.is_available()
 device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
 torch.cuda.set_device(device)
@@ -512,25 +514,29 @@ scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
 # init the optimizer(s)
-adam_params = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+adam_params = [dict(params=head_params, lr=0.22 / math.sqrt(8)), dict(params=embed_params, lr=0.6 / math.sqrt(8)), dict(params=scalar_params, lr=0.04 / math.sqrt(8))]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
 optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
-optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, rank=rank, world_size=world_size)
+optimizer2 = MuonPower(hidden_matrix_params, lr=0.05 / math.sqrt(8), momentum=0.95, p=0.8, rank=rank, world_size=world_size)
 optimizers = [optimizer1, optimizer2]
 for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
 
-# learning rate schedule: stable then decay
+MIN_LR_FACTOR = 0.1
+WARMUP_STEPS=25
+
 def get_lr(step: int):
-    x = step / args.num_iterations # progress in training
-    assert 0 <= x < 1
-    if x < 1 - args.cooldown_frac:
-        return 1.0
+    if WARMUP_STEPS > 0 and step < WARMUP_STEPS:
+        return (step + 1) / WARMUP_STEPS
     else:
-        w = (1 - x) / args.cooldown_frac
-        return w * 1.0 + (1 - w) * 0.1
+        adjusted_step = step - WARMUP_STEPS if WARMUP_STEPS > 0 else step
+        adjusted_total = args.num_iterations - WARMUP_STEPS if WARMUP_STEPS > 0 else args.num_iterations
+        x = adjusted_step / adjusted_total
+        assert 0 <= x < 1
+        return MIN_LR_FACTOR + (1.0 - MIN_LR_FACTOR) * 0.5 * (1 + math.cos(math.pi * x))
+
 
 # attention window size schedule: linearly increase
 @lru_cache(1)
