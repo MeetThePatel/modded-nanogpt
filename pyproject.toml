@@ -1,0 +1,20 @@
+[project]
+name = "modded-nanogpt"
+version = "0.1.0"
+description = "NanoGPT speedrun experiments"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets",
+    "huggingface-hub",
+    "kernels",
+    "numpy",
+    "setuptools",
+    "tiktoken",
+    "torch==2.10",
+    "tqdm",
+    "typing-extensions==4.15.0",
+]
+
+[tool.uv]
+package = false

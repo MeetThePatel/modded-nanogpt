@@ -18,16 +18,15 @@ RUN curl -O https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_
     cd .. && \
     rm -rf Python-${PYTHON_VERSION} Python-${PYTHON_VERSION}.tgz
 
-RUN ln -s /usr/local/bin/python3.12 /usr/local/bin/python && \
-    ln -s /usr/local/bin/pip3.12 /usr/local/bin/pip
+RUN ln -s /usr/local/bin/python3.12 /usr/local/bin/python
 
-COPY requirements.txt /modded-nanogpt/requirements.txt
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+COPY pyproject.toml /modded-nanogpt/pyproject.toml
 WORKDIR /modded-nanogpt
 
-RUN python -m pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-RUN pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126 --upgrade
+RUN uv sync
 
 CMD ["bash"]
 ENTRYPOINT []

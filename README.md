@@ -61,9 +61,9 @@ Contributors list (growing with each new record): [@bozavlado](https://x.com/boz
 To run the current record, run the following commands.
 ```bash
 git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
-pip install -r requirements.txt
+uv sync
 # downloads only the first 900M training tokens to save time
-python data/cached_fineweb10B.py 9
+uv run python data/cached_fineweb10B.py 9
 ./run.sh
 ```
 Add torchrun to path if ./run.sh gives error `torchrun: command not found`.
@@ -71,6 +71,25 @@ Add torchrun to path if ./run.sh gives error `torchrun: command not found`.
 **Note: torch.compile will add around 7 minutes of latency the first time you run the code.**
 
 Official records are timed on 8 NVIDIA H100 GPUs from https://app.primeintellect.ai/. PrimeIntellect has generously sponsored recent validation runs.
+
+## Running locally on Apple Silicon
+
+The wallclock speedrun trainer is CUDA-only. For local M2 smoke testing, use the single-process local trainer:
+
+```bash
+uv sync
+./run-local.sh
+```
+
+This uses the regular macOS PyTorch wheel and selects `mps` when Metal is available. The local trainer uses the optimization benchmark's current record optimizer, Contra-Muon-to-Soft-Muon from `records/track_3_optimization` result #20, with reduced default dimensions for laptop smoke testing. Pass `--record-shape` to use the benchmark's 12-layer, 768-dim, 1024-token shape. It reads `data/fineweb10B/fineweb_train_*.bin` if you have already downloaded cached FineWeb shards, otherwise it falls back to synthetic tokens so the model/optimizer path can still be checked.
+
+For local optimizer comparisons, keep the shape, seed, step count, eval tokens, and batch size fixed, and change only the method implementation/name:
+
+```bash
+uv run ./train_local.py --steps 1000 --batch-size 8 --num-layers 8 --model-dim 512 --head-dim 128 --seq-len 512 --eval-every 50 --eval-tokens 65536 --seed 0 --method-name contra-soft-muon-record20
+```
+
+Each run appends a comparable row to `logs/local_benchmark.csv` with final validation loss, elapsed time, token count, and model shape.
 
 ## Alternative: Running with Docker (recommended for precise timing)
 
@@ -81,7 +100,7 @@ Note: an NVIDIA driver must already be installed on the system (useful if only t
 ```bash
 git clone https://github.com/KellerJordan/modded-nanogpt.git && cd modded-nanogpt
 sudo docker build -t modded-nanogpt .
-sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt python data/cached_fineweb10B.py 8
+sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt uv run python data/cached_fineweb10B.py 8
 sudo docker run -it --rm --gpus all -v $(pwd):/modded-nanogpt modded-nanogpt sh run.sh
 ```
 
@@ -399,4 +418,3 @@ compared to Shampoo.
 ```
 
 <img src="img/dofa.jpg" alt="itsover_wereback" style="width:100%;">
-
